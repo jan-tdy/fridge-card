@@ -24,12 +24,14 @@
  * under a name that's sitting there offers to restore it instead of
  * creating a duplicate. The layout responds to the card's own width (not
  * the browser window) - side-by-side on a wider card, and the item list
- * itself splitting into two columns once there's room for it.
+ * itself splitting into two columns once there's room for it. A numeric
+ * quantity gets a one-tap down arrow to knock it down by one without
+ * opening the edit form, greyed out once it reaches 1.
  *
  * https://github.com/jan-tdy/fridge-card
  */
 
-const CARD_VERSION = "1.7.0";
+const CARD_VERSION = "1.7.1";
 
 function fireEvent(node, type, detail = {}, options = {}) {
   const event = new Event(type, {
@@ -914,6 +916,8 @@ class FridgeCard extends HTMLElement {
     const note = fieldValue(extractNote, item.description);
     const conf = extractConf(item.description);
     const brand = extractBrand(item.description);
+    const qtyNumMatch = qty.match(/^(\d+)/);
+    const qtyNum = qtyNumMatch ? Number(qtyNumMatch[1]) : null;
     return `
       <div class="item" data-uid="${escapeHtml(item.uid)}">
         <button class="icon-btn eaten-btn" data-action="mark-eaten" title="Mark as eaten">
@@ -924,7 +928,17 @@ class FridgeCard extends HTMLElement {
           ${
             qty || cond || conf
               ? `<div class="item-meta">
-                  ${qty ? `<span class="meta-chip"><ha-icon icon="mdi:counter"></ha-icon>${escapeHtml(qty)}</span>` : ""}
+                  ${
+                    qty
+                      ? `<span class="meta-chip"><ha-icon icon="mdi:counter"></ha-icon>${escapeHtml(qty)}${
+                          qtyNum !== null
+                            ? `<button type="button" class="qty-dec-btn" data-action="decrement-qty" ${qtyNum <= 1 ? "disabled" : ""} title="One less">
+                                <ha-icon icon="mdi:chevron-down"></ha-icon>
+                              </button>`
+                            : ""
+                        }</span>`
+                      : ""
+                  }
                   ${cond ? `<span class="meta-chip"><ha-icon icon="mdi:package-variant-closed"></ha-icon>${escapeHtml(cond)}</span>` : ""}
                   ${conf ? `<span class="meta-chip meta-conf">${escapeHtml(conf)}%</span>` : ""}
                 </div>`
@@ -967,6 +981,8 @@ class FridgeCard extends HTMLElement {
       this._deleteItem(uid);
     } else if (action === "mark-eaten") {
       this._markEaten(uid);
+    } else if (action === "decrement-qty") {
+      this._decrementQty(uid);
     } else if (action === "save-item") {
       this._saveItem(uid, itemEl);
     } else if (action === "draw-box") {
@@ -1093,6 +1109,47 @@ class FridgeCard extends HTMLElement {
     await this._fetchItems();
   }
 
+  // One tap to knock a numeric quantity down by one (e.g. "3 kusy" -> "2
+  // kusy") without opening the edit form - stops at 1 (the button is
+  // disabled in _itemRowHtml at that point; use "eaten" for the last one).
+  // Written back through the "manual" qty marker, same as any other
+  // card edit, so fridge-core keeps it instead of overwriting it with a
+  // fresh AI guess; every other field is carried forward unchanged.
+  async _decrementQty(uid) {
+    const item = this._items.find((i) => i.uid === uid);
+    if (!item) return;
+    const qty = extractQty(item.description);
+    if (!qty) return;
+    const m = qty.value.match(/^(\d+)(.*)$/);
+    if (!m) return;
+    const n = Number(m[1]);
+    if (n <= 1) return;
+    const newQty = `${n - 1}${m[2]}`;
+
+    const cond = extractCond(item.description);
+    // extractNote (not the raw marker) so a legacy item's plain free text -
+    // not yet captured by a [[note:...]] marker - doesn't get silently
+    // dropped just because its quantity was decremented.
+    const note = extractNote(item.description);
+    const conf = extractConf(item.description);
+    const brand = extractBrand(item.description);
+    const box = extractBox(item.description);
+
+    const parts = [fieldMarker("qty", newQty, true)];
+    if (cond) parts.push(fieldMarker("cond", cond.value, cond.manual));
+    if (note) parts.push(fieldMarker("note", note.value, note.manual));
+    if (conf) parts.push(`[[conf:${conf}]]`);
+    if (box) parts.push(boxMarker(box));
+    if (brand) parts.push(`[[brand:${brand.replace(/[[\]]/g, "")}]]`);
+
+    await this._hass.callService("todo", "update_item", {
+      entity_id: this._config.todo_entity,
+      item: uid,
+      description: parts.join(" "),
+    });
+    await this._fetchItems();
+  }
+
   async _deleteItem(uid) {
     this._pendingBox = undefined;
     this._draft = null;
@@ -1159,6 +1216,10 @@ class FridgeCard extends HTMLElement {
       .item-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
       .meta-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 0.7rem; font-weight: 600; color: var(--secondary-text-color); background: var(--secondary-background-color, rgba(0,0,0,0.06)); padding: 2px 7px; border-radius: 999px; }
       .meta-chip ha-icon { --mdc-icon-size: 13px; }
+      .qty-dec-btn { border: none; background: none; padding: 0; margin: 0 0 0 1px; display: inline-flex; align-items: center; cursor: pointer; color: inherit; }
+      .qty-dec-btn ha-icon { --mdc-icon-size: 13px; }
+      .qty-dec-btn:hover:not(:disabled) { color: var(--primary-color); }
+      .qty-dec-btn:disabled { opacity: 0.35; cursor: not-allowed; }
       .meta-chip.meta-conf { color: var(--primary-color); }
       .item-brand { display: inline-flex; align-items: center; gap: 3px; font-size: 0.75rem; font-weight: 600; color: var(--primary-color); margin-top: 4px; }
       .item-brand ha-icon { --mdc-icon-size: 14px; }

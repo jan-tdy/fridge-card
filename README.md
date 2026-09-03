@@ -14,6 +14,8 @@ AI-recognized contents.
 - Add / edit / delete items in place. Editing quantity, condition, note
   or brand protects that field from being overwritten by a fresh AI
   guess on the next scan — the same idea as a hand-drawn detection frame
+- A numeric quantity gets a one-tap down arrow to knock it down by one
+  without opening the edit form — greyed out once it reaches 1
 - A checkbox on each item marks it **eaten** instead of deleting it
   outright — it moves into a collapsed **Eaten** section at the bottom,
   restorable from there. Adding a new item under a name that's already
