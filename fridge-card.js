@@ -6,12 +6,15 @@
  * correct for a crooked camera mount), a plain list of recognized items
  * (name, description, expiration date - all editable in place, no checkboxes),
  * plus quick controls for the fridge light, door sensor, live camera view and
- * triggering a re-analysis of the fridge contents.
+ * triggering a re-analysis of the fridge contents. Optionally overlays each
+ * item's AI-estimated bounding box on the photo (toggle in the header) - the
+ * box coordinates come from a companion fridge-core automation update and
+ * their accuracy depends entirely on the AI model, hence "b0".
  *
  * https://github.com/jan-tdy/fridge-card
  */
 
-const CARD_VERSION = "1.0.0";
+const CARD_VERSION = "1.1.0b0";
 
 function fireEvent(node, type, detail = {}, options = {}) {
   const event = new Event(type, {
@@ -81,6 +84,23 @@ function maskDMYInput(raw) {
   return out;
 }
 
+// fridge-core embeds each item's AI-estimated location in the photo as a
+// trailing "[[box:x1,y1,x2,y2]]" marker in the todo item's description
+// (x/y are percentages 0-100 of the photo's width/height, top-left origin).
+const BOX_MARKER_RE = /\s*\[\[box:\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\]\]\s*/;
+
+function extractBox(description) {
+  const m = BOX_MARKER_RE.exec(String(description || ""));
+  if (!m) return null;
+  const [x1, y1, x2, y2] = m.slice(1).map(Number);
+  if ([x1, y1, x2, y2].some((n) => Number.isNaN(n))) return null;
+  return { x1, y1, x2, y2 };
+}
+
+function stripBoxMarker(description) {
+  return String(description || "").replace(BOX_MARKER_RE, " ").trim();
+}
+
 function dueInfo(due) {
   if (!due) return null;
   const dueDate = new Date(due.length === 10 ? `${due}T00:00:00` : due);
@@ -127,6 +147,7 @@ class FridgeCard extends HTMLElement {
     this._items = [];
     this._itemsStateKey = null;
     this._editingUid = null;
+    this._showBoxes = false;
   }
 
   setConfig(config) {
@@ -146,8 +167,25 @@ class FridgeCard extends HTMLElement {
     this._items = [];
     this._itemsStateKey = null;
     this._editingUid = null;
+    this._showBoxes = this._loadShowBoxes();
     this._build();
     if (this._hass) this._refreshAll();
+  }
+
+  _loadShowBoxes() {
+    try {
+      return localStorage.getItem(`fridge-card-boxes-${this._config.todo_entity}`) === "1";
+    } catch (e) {
+      return false;
+    }
+  }
+
+  _saveShowBoxes() {
+    try {
+      localStorage.setItem(`fridge-card-boxes-${this._config.todo_entity}`, this._showBoxes ? "1" : "0");
+    } catch (e) {
+      /* storage unavailable, ignore */
+    }
   }
 
   connectedCallback() {
@@ -186,9 +224,14 @@ class FridgeCard extends HTMLElement {
       <ha-card>
         <div class="header">
           <div class="title"></div>
+          <button class="boxes-toggle" data-action="toggle-boxes" hidden>
+            <ha-icon icon="mdi:vector-square"></ha-icon>
+            <span>Detection frames</span>
+          </button>
         </div>
         <div class="image-wrap">
           <img class="fridge-img" alt="Fridge contents" />
+          <div class="detection-overlay"></div>
           <div class="fallback">
             <ha-icon icon="mdi:image-off-outline"></ha-icon>
             <span>No image</span>
@@ -205,16 +248,28 @@ class FridgeCard extends HTMLElement {
       </ha-card>
     `;
 
+    this._headerEl = root.querySelector(".header");
     this._titleEl = root.querySelector(".title");
+    this._boxesToggleEl = root.querySelector(".boxes-toggle");
     this._imgEl = root.querySelector(".fridge-img");
     this._imageWrapEl = root.querySelector(".image-wrap");
+    this._overlayEl = root.querySelector(".detection-overlay");
     this._fallbackEl = root.querySelector(".fallback");
     this._statusRowEl = root.querySelector(".status-row");
     this._itemsEl = root.querySelector(".items");
 
     this._titleEl.textContent = this._config.title || "";
-    root.querySelector(".header").style.display = this._config.title ? "" : "none";
+    this._titleEl.style.display = this._config.title ? "" : "none";
     this._imageWrapEl.style.height = `${Number(this._config.image_height) || 220}px`;
+
+    this._boxesToggleEl.classList.toggle("active", this._showBoxes);
+    this._boxesToggleEl.addEventListener("click", () => {
+      this._showBoxes = !this._showBoxes;
+      this._saveShowBoxes();
+      this._boxesToggleEl.classList.toggle("active", this._showBoxes);
+      this._renderBoxes();
+    });
+    this._updateHeaderVisibility();
 
     this._imgEl.addEventListener("load", () => {
       this._fallbackEl.classList.remove("show");
@@ -240,19 +295,66 @@ class FridgeCard extends HTMLElement {
     this._applyImageTransform();
   }
 
+  // Sizes/positions the <img> to fit image-wrap (preserving aspect ratio,
+  // like object-fit:contain would) using explicit width/height rather than
+  // max-width/max-height, and applies the configured rotation. The
+  // detection overlay is given the exact same box + transform so its
+  // percentage-positioned children rotate together with the photo.
   _applyImageTransform() {
     if (!this._imgEl || !this._imageWrapEl) return;
     const rot = Number(this._config.image_rotation) || 0;
-    this._imgEl.style.transform = `rotate(${rot}deg)`;
     const swapped = rot === 90 || rot === 270;
-    if (swapped) {
-      const rect = this._imageWrapEl.getBoundingClientRect();
-      this._imgEl.style.maxWidth = `${rect.height}px`;
-      this._imgEl.style.maxHeight = `${rect.width}px`;
-    } else {
-      this._imgEl.style.maxWidth = "100%";
-      this._imgEl.style.maxHeight = "100%";
+    const wrapRect = this._imageWrapEl.getBoundingClientRect();
+    const boxW = swapped ? wrapRect.height : wrapRect.width;
+    const boxH = swapped ? wrapRect.width : wrapRect.height;
+    const naturalW = this._imgEl.naturalWidth || boxW || 1;
+    const naturalH = this._imgEl.naturalHeight || boxH || 1;
+    const scale = Math.min(boxW / naturalW, boxH / naturalH) || 1;
+    const renderW = `${naturalW * scale}px`;
+    const renderH = `${naturalH * scale}px`;
+    const transform = `translate(-50%, -50%) rotate(${rot}deg)`;
+
+    this._imgEl.style.width = renderW;
+    this._imgEl.style.height = renderH;
+    this._imgEl.style.transform = transform;
+    if (this._overlayEl) {
+      this._overlayEl.style.width = renderW;
+      this._overlayEl.style.height = renderH;
+      this._overlayEl.style.transform = transform;
     }
+  }
+
+  _updateHeaderVisibility() {
+    if (!this._headerEl) return;
+    const hasTitle = Boolean(this._config.title);
+    const hasBoxes = !this._boxesToggleEl.hasAttribute("hidden");
+    this._headerEl.style.display = hasTitle || hasBoxes ? "" : "none";
+  }
+
+  // Draws one rectangle per item that carries an AI-estimated box (see
+  // extractBox), or clears the overlay when detection frames are off.
+  _renderBoxes() {
+    if (!this._overlayEl) return;
+    const withBoxes = this._items
+      .map((item) => ({ item, box: extractBox(item.description) }))
+      .filter((x) => x.box);
+
+    this._boxesToggleEl.toggleAttribute("hidden", withBoxes.length === 0);
+    this._updateHeaderVisibility();
+
+    if (!this._showBoxes || withBoxes.length === 0) {
+      this._overlayEl.innerHTML = "";
+      return;
+    }
+    this._overlayEl.innerHTML = withBoxes
+      .map(({ box }) => {
+        const left = Math.min(box.x1, box.x2);
+        const top = Math.min(box.y1, box.y2);
+        const width = Math.abs(box.x2 - box.x1);
+        const height = Math.abs(box.y2 - box.y1);
+        return `<div class="detection-box" style="left:${left}%; top:${top}%; width:${width}%; height:${height}%;"></div>`;
+      })
+      .join("");
   }
 
   _updateImage() {
@@ -355,6 +457,7 @@ class FridgeCard extends HTMLElement {
   _renderItems() {
     if (!this._items.length) {
       this._itemsEl.innerHTML = `<div class="empty">No items recognized yet.</div>`;
+      this._renderBoxes();
       return;
     }
     const sorted = [...this._items].sort((a, b) => {
@@ -364,6 +467,7 @@ class FridgeCard extends HTMLElement {
       return (a.summary || "").localeCompare(b.summary || "");
     });
     this._itemsEl.innerHTML = sorted.map((item) => this._itemRowHtml(item)).join("");
+    this._renderBoxes();
   }
 
   _itemRowHtml(item) {
@@ -371,7 +475,7 @@ class FridgeCard extends HTMLElement {
       return `
         <div class="item item-editing" data-uid="${escapeHtml(item.uid)}">
           <input class="edit-name" type="text" value="${escapeHtml(item.summary)}" placeholder="Item name" />
-          <textarea class="edit-desc" placeholder="Description">${escapeHtml(item.description || "")}</textarea>
+          <textarea class="edit-desc" placeholder="Description">${escapeHtml(stripBoxMarker(item.description))}</textarea>
           <input
             class="edit-due"
             type="text"
@@ -390,11 +494,12 @@ class FridgeCard extends HTMLElement {
     }
 
     const info = dueInfo(item.due);
+    const desc = stripBoxMarker(item.description);
     return `
       <div class="item" data-uid="${escapeHtml(item.uid)}">
         <div class="item-main">
           <div class="item-name">${escapeHtml(item.summary)}</div>
-          ${item.description ? `<div class="item-desc">${escapeHtml(item.description)}</div>` : ""}
+          ${desc ? `<div class="item-desc">${escapeHtml(desc)}</div>` : ""}
         </div>
         <div class="item-side">
           ${info ? `<div class="due-chip ${info.cls}" title="${escapeHtml(info.title)}">${escapeHtml(info.label)}</div>` : ""}
@@ -440,10 +545,19 @@ class FridgeCard extends HTMLElement {
 
   async _saveItem(uid, itemEl) {
     const name = itemEl.querySelector(".edit-name").value.trim();
-    const description = itemEl.querySelector(".edit-desc").value.trim();
+    let description = itemEl.querySelector(".edit-desc").value.trim();
     const dueText = itemEl.querySelector(".edit-due").value.trim();
     const due = dueText ? parseDMY(dueText) : null;
     if (!name) return;
+
+    // Editing the description strips the AI's [[box:...]] marker for
+    // display; carry it forward so a manual edit doesn't drop the
+    // detection frame until the next scan overwrites it anyway.
+    const existing = this._items.find((i) => i.uid === uid);
+    const existingBox = existing ? extractBox(existing.description) : null;
+    if (existingBox) {
+      description = `${description} [[box:${existingBox.x1},${existingBox.y1},${existingBox.x2},${existingBox.y2}]]`.trim();
+    }
 
     try {
       if (uid === "__new__") {
@@ -483,12 +597,18 @@ class FridgeCard extends HTMLElement {
     return `
       :host { display: block; }
       ha-card { padding: 16px; overflow: hidden; }
-      .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+      .header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
       .title { font-size: 1.2rem; font-weight: 600; color: var(--primary-text-color); }
       .icon-btn { border: none; background: var(--secondary-background-color, rgba(0,0,0,0.06)); color: var(--primary-text-color); width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background .15s ease; flex-shrink: 0; }
       .icon-btn:hover { background: var(--divider-color, rgba(0,0,0,0.12)); }
-      .image-wrap { position: relative; border-radius: 12px; overflow: hidden; background: var(--secondary-background-color, #eee); display: flex; align-items: center; justify-content: center; margin-bottom: 14px; }
-      .fridge-img { object-fit: contain; transition: transform .25s ease, max-width .25s ease, max-height .25s ease; }
+      .boxes-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; border: none; background: var(--secondary-background-color, rgba(0,0,0,0.06)); color: var(--secondary-text-color); font-size: 0.8rem; font-family: inherit; cursor: pointer; flex-shrink: 0; transition: background .15s ease, color .15s ease; }
+      .boxes-toggle ha-icon { --mdc-icon-size: 16px; }
+      .boxes-toggle:hover { background: var(--divider-color, rgba(0,0,0,0.12)); }
+      .boxes-toggle.active { background: var(--error-color, #f44336); color: var(--text-primary-color, #fff); }
+      .image-wrap { position: relative; border-radius: 12px; overflow: hidden; background: var(--secondary-background-color, #eee); margin-bottom: 14px; }
+      .fridge-img { position: absolute; top: 50%; left: 50%; transition: transform .25s ease, width .25s ease, height .25s ease; }
+      .detection-overlay { position: absolute; top: 50%; left: 50%; pointer-events: none; transition: transform .25s ease, width .25s ease, height .25s ease; }
+      .detection-box { position: absolute; border: 2px solid #ff3b3b; border-radius: 3px; box-shadow: 0 0 0 1px rgba(0,0,0,0.35); }
       .fallback { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 6px; color: var(--secondary-text-color); font-size: 0.85rem; }
       .fallback.show { display: flex; }
       .fallback ha-icon { --mdc-icon-size: 32px; }
@@ -641,7 +761,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "fridge-card",
   name: "Fridge Card",
-  description: "AI-recognized fridge contents with rotatable photo, live view and quick controls.",
+  description: "AI-recognized fridge contents with rotatable photo, optional detection frames, live view and quick controls.",
   preview: false,
   documentationURL: "https://github.com/jan-tdy/fridge-card",
 });
