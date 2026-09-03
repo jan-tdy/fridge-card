@@ -11,9 +11,10 @@ AI-recognized contents.
   description and expiration date, all editable directly on the card
 - Add / edit / delete items in place
 - Optional **detection frames**: toggle in the header to overlay each
-  item's AI-estimated location on the photo (only shown once at least one
-  item carries box data — see below; accuracy depends on the AI model,
-  hence this being a `b0` release)
+  item's location on the photo (only shown once at least one item carries
+  box data — see below). Boxes can come from the AI (accuracy depends on
+  the model) or be **drawn by hand**: while editing an item, hit "Draw on
+  photo" and drag a rectangle over it
 - Quick controls: fridge light toggle, door status, open the live camera
   view, and a button to trigger the fridge-analysis automation
 - Fully configurable from the Lovelace UI editor — no YAML required
@@ -92,11 +93,17 @@ Click the pencil icon on any item to edit its name, description and
 expiration date, or delete it. The badge shows a relative countdown
 ("expires in 3d"); hover it for the exact date. When editing, the date
 field always uses `dd/mm/yyyy` (typing digits auto-inserts the `/`),
-regardless of the browser's locale. Use **Add item** to add a new one.
+regardless of the browser's locale — clear the field and hit Save to
+remove the expiration date entirely. Use **Add item** to add a new one.
 Editing calls the standard `todo.add_item` /
 `todo.update_item` / `todo.remove_item` services, so your `todo_entity`
 must support the corresponding features (create/update/delete,
 description, due date).
+
+While editing, use **Draw on photo** to set (or **Redraw**/**Clear**) the
+item's detection frame by hand — drag a rectangle over it on the photo.
+This works correctly at any `image_rotation`, and overrides whatever box
+the AI provided until the next scan overwrites it again.
 
 ## Companion repository
 
