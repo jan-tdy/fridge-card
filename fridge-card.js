@@ -26,12 +26,15 @@
  * the browser window) - side-by-side on a wider card, and the item list
  * itself splitting into two columns once there's room for it. A numeric
  * quantity gets a one-tap down arrow to knock it down by one without
- * opening the edit form, greyed out once it reaches 1.
+ * opening the edit form, greyed out once it reaches 1. When a
+ * snapshot_service is configured (see the fridge-core README), a Save
+ * button copies the current photo to a timestamped file and ◀ ▶/Latest
+ * controls browse back through previously saved ones.
  *
  * https://github.com/jan-tdy/fridge-card
  */
 
-const CARD_VERSION = "1.7.1";
+const CARD_VERSION = "1.8.0";
 
 function fireEvent(node, type, detail = {}, options = {}) {
   const event = new Event(type, {
@@ -236,6 +239,7 @@ class FridgeCard extends HTMLElement {
       light_entity: "",
       door_entity: "",
       analyze_entity: "",
+      snapshot_service: "",
     };
   }
 
@@ -255,6 +259,12 @@ class FridgeCard extends HTMLElement {
     // Timestamp behind the currently-shown photo (entity last_changed, or a
     // manual "now" from a hard refresh) - see _updateImage/_hardRefreshImage.
     this._shownTs = null;
+    // Saved-snapshot browsing (see _fetchHistory/_showHistory). _history is
+    // a list of unix timestamps read from history/manifest.txt, newest
+    // first; _historyIndex is -1 while viewing the live photo, or an index
+    // into _history while browsing a saved one.
+    this._history = [];
+    this._historyIndex = -1;
     // Manual box drawing (draw-on-photo) state.
     this._drawingUid = null;
     this._drawActive = false;
@@ -288,6 +298,8 @@ class FridgeCard extends HTMLElement {
     this._editingUid = null;
     this._showBoxes = this._loadShowBoxes();
     this._shownTs = null;
+    this._history = [];
+    this._historyIndex = -1;
     this._drawingUid = null;
     this._drawActive = false;
     this._pendingBox = undefined;
@@ -324,7 +336,10 @@ class FridgeCard extends HTMLElement {
     this._updateImage();
     this._updateStatusRow();
     this._maybeRefreshItems();
-    if (first) this._fetchItems();
+    if (first) {
+      this._fetchItems();
+      if (this._config.snapshot_service) this._fetchHistory();
+    }
   }
 
   get hass() {
@@ -339,6 +354,7 @@ class FridgeCard extends HTMLElement {
     this._updateImage();
     this._updateStatusRow();
     this._fetchItems();
+    if (this._config.snapshot_service) this._fetchHistory();
   }
 
   _build() {
@@ -349,6 +365,13 @@ class FridgeCard extends HTMLElement {
         <div class="header">
           <div class="title"></div>
           <div class="header-actions">
+            <button class="pill-btn save-btn" hidden>
+              <ha-icon icon="mdi:content-save-outline"></ha-icon>
+              <span>Save</span>
+            </button>
+            <button class="pill-btn latest-btn" hidden disabled>
+              <span>Latest</span>
+            </button>
             <button class="icon-btn refresh-btn" title="Refresh photo">
               <ha-icon icon="mdi:refresh"></ha-icon>
             </button>
@@ -363,6 +386,13 @@ class FridgeCard extends HTMLElement {
             <div class="image-wrap">
               <img class="fridge-img" alt="Fridge contents" />
               <div class="detection-overlay"></div>
+              <div class="history-badge" hidden></div>
+              <button class="history-nav history-prev" hidden disabled title="Older">
+                <ha-icon icon="mdi:chevron-left"></ha-icon>
+              </button>
+              <button class="history-nav history-next" hidden disabled title="Newer">
+                <ha-icon icon="mdi:chevron-right"></ha-icon>
+              </button>
               <div class="fallback">
                 <ha-icon icon="mdi:image-off-outline"></ha-icon>
                 <span>No image</span>
@@ -406,10 +436,26 @@ class FridgeCard extends HTMLElement {
     this._eatenToggleEl = root.querySelector(".eaten-toggle");
     this._eatenToggleLabelEl = root.querySelector(".eaten-toggle-label");
     this._eatenListEl = root.querySelector(".eaten-list");
+    this._saveBtnEl = root.querySelector(".save-btn");
+    this._latestBtnEl = root.querySelector(".latest-btn");
+    this._historyPrevEl = root.querySelector(".history-prev");
+    this._historyNextEl = root.querySelector(".history-next");
+    this._historyBadgeEl = root.querySelector(".history-badge");
 
     this._titleEl.textContent = this._config.title || "";
     this._titleEl.style.display = this._config.title ? "" : "none";
     this._imageWrapEl.style.height = `${Number(this._config.image_height) || 220}px`;
+
+    const hasSnapshotService = Boolean(this._config.snapshot_service);
+    this._saveBtnEl.hidden = !hasSnapshotService;
+    this._latestBtnEl.hidden = !hasSnapshotService;
+    this._historyPrevEl.hidden = !hasSnapshotService;
+    this._historyNextEl.hidden = !hasSnapshotService;
+    this._saveBtnEl.addEventListener("click", () => this._saveSnapshot());
+    this._latestBtnEl.addEventListener("click", () => this._showHistory(-1));
+    this._historyPrevEl.addEventListener("click", () => this._showHistory(this._historyIndex + 1));
+    this._historyNextEl.addEventListener("click", () => this._showHistory(this._historyIndex - 1));
+    this._updateHistoryControls();
 
     this._boxesToggleEl.classList.toggle("active", this._showBoxes);
     this._boxesToggleEl.addEventListener("click", () => {
@@ -677,6 +723,7 @@ class FridgeCard extends HTMLElement {
   }
 
   _updateImage() {
+    if (this._historyIndex !== -1) return; // browsing a saved snapshot - leave it alone
     const cfg = this._config;
     let ts = null;
     if (cfg.image_entity) {
@@ -701,12 +748,104 @@ class FridgeCard extends HTMLElement {
   // Forces an immediate reload of the photo, bypassing both the browser
   // cache and the entity-timestamp cache-busting above - useful when a new
   // snapshot is ready on disk but the image_entity's last_changed hasn't
-  // ticked (e.g. its state value happened not to change).
+  // ticked (e.g. its state value happened not to change). Also backs out
+  // of browsing a saved snapshot, if that's what's currently shown.
   _hardRefreshImage() {
+    if (this._historyIndex !== -1) {
+      this._historyIndex = -1;
+      this._historyBadgeEl.hidden = true;
+      this._renderBoxes();
+      this._updateHistoryControls();
+    }
     this._shownTs = Math.floor(Date.now() / 1000);
     const url = `${this._config.image_path}?v=${this._shownTs}`;
     this._imgEl.dataset.src = url;
     this._imgEl.src = url;
+  }
+
+  // The directory saved snapshots and their manifest live in, derived from
+  // image_path (e.g. "/local/fridge/fridge_latest.jpg" -> ".../history").
+  _historyBase() {
+    const path = this._config.image_path || "";
+    const idx = path.lastIndexOf("/");
+    return idx >= 0 ? `${path.slice(0, idx)}/history` : "history";
+  }
+
+  // Reads history/manifest.txt - one unix timestamp per line, appended to
+  // by the shell_command each time Save runs (see fridge-core's README) -
+  // as a plain text file the card fetches directly; no listing API needed.
+  async _fetchHistory() {
+    try {
+      const res = await fetch(`${this._historyBase()}/manifest.txt`, { cache: "no-store" });
+      if (!res.ok) throw new Error(String(res.status));
+      const text = await res.text();
+      this._history = text
+        .split("\n")
+        .map((line) => Number(line.trim()))
+        .filter((n) => Number.isFinite(n) && n > 0)
+        .sort((a, b) => b - a);
+    } catch (e) {
+      this._history = [];
+    }
+    if (this._historyIndex >= this._history.length) this._historyIndex = -1;
+    this._updateHistoryControls();
+  }
+
+  async _saveSnapshot() {
+    if (!this._config.snapshot_service) return;
+    const [domain, service] = this._config.snapshot_service.split(".");
+    if (!domain || !service) return;
+    this._saveBtnEl.disabled = true;
+    try {
+      await this._hass.callService(domain, service, {});
+      // Give the shell command a moment to finish writing before re-reading
+      // the manifest it just appended to.
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      await this._fetchHistory();
+    } finally {
+      this._saveBtnEl.disabled = false;
+    }
+  }
+
+  // index -1 = live photo; 0..n-1 = that entry in _history (0 = most
+  // recently saved). Out-of-range requests are clamped to the nearest end
+  // instead of ignored, so holding the arrow down doesn't need per-click
+  // bounds-checking at the call site.
+  _showHistory(index) {
+    if (!this._history.length && index !== -1) return;
+    const clamped = Math.max(-1, Math.min(index, this._history.length - 1));
+    this._historyIndex = clamped;
+    if (clamped === -1) {
+      this._exitHistoryView();
+    } else {
+      const ts = this._history[clamped];
+      const url = `${this._historyBase()}/fridge_${ts}.jpg`;
+      this._imgEl.dataset.src = url;
+      this._imgEl.src = url;
+      this._overlayEl.innerHTML = ""; // detection boxes belong to the live photo, not history
+      this._historyBadgeEl.hidden = false;
+      this._historyBadgeEl.textContent = new Date(ts * 1000).toLocaleString();
+    }
+    this._updateHistoryControls();
+  }
+
+  // Drops back to the live photo. Resets _shownTs so the immediate
+  // _updateImage call below doesn't think it's already showing this
+  // timestamp and skip reloading it.
+  _exitHistoryView() {
+    this._historyIndex = -1;
+    this._historyBadgeEl.hidden = true;
+    this._shownTs = null;
+    this._updateImage();
+    this._renderBoxes();
+  }
+
+  _updateHistoryControls() {
+    if (!this._latestBtnEl) return;
+    const atLive = this._historyIndex === -1;
+    this._latestBtnEl.disabled = atLive;
+    this._historyNextEl.disabled = atLive;
+    this._historyPrevEl.disabled = this._historyIndex >= this._history.length - 1;
   }
 
   _onStatusClick(e) {
@@ -1181,6 +1320,10 @@ class FridgeCard extends HTMLElement {
       .boxes-toggle ha-icon { --mdc-icon-size: 16px; }
       .boxes-toggle:hover { background: var(--divider-color, rgba(0,0,0,0.12)); }
       .boxes-toggle.active { background: var(--error-color, #f44336); color: var(--text-primary-color, #fff); }
+      .pill-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; border: none; background: var(--secondary-background-color, rgba(0,0,0,0.06)); color: var(--secondary-text-color); font-size: 0.8rem; font-family: inherit; cursor: pointer; flex-shrink: 0; transition: background .15s ease, color .15s ease; }
+      .pill-btn ha-icon { --mdc-icon-size: 16px; }
+      .pill-btn:hover:not(:disabled) { background: var(--divider-color, rgba(0,0,0,0.12)); }
+      .pill-btn:disabled { opacity: 0.4; cursor: default; }
       .image-wrap { position: relative; border-radius: 12px; overflow: hidden; background: var(--secondary-background-color, #eee); margin-bottom: 14px; }
       .image-wrap.drawing { cursor: crosshair; user-select: none; touch-action: none; }
       .image-wrap.drawing::after { content: 'Drag on the photo to mark the item'; position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); background: rgba(0,0,0,0.65); color: #fff; font-size: 0.7rem; padding: 4px 10px; border-radius: 999px; pointer-events: none; white-space: nowrap; z-index: 2; }
@@ -1193,6 +1336,12 @@ class FridgeCard extends HTMLElement {
       .fallback { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 6px; color: var(--secondary-text-color); font-size: 0.85rem; }
       .fallback.show { display: flex; }
       .fallback ha-icon { --mdc-icon-size: 32px; }
+      .history-nav { position: absolute; top: 50%; transform: translateY(-50%); z-index: 2; border: none; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; background: rgba(0,0,0,0.45); color: #fff; transition: background .15s ease, opacity .15s ease; }
+      .history-nav:hover:not(:disabled) { background: rgba(0,0,0,0.65); }
+      .history-nav:disabled { opacity: 0.25; cursor: default; }
+      .history-prev { left: 8px; }
+      .history-next { right: 8px; }
+      .history-badge { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); z-index: 2; background: rgba(0,0,0,0.65); color: #fff; font-size: 0.7rem; padding: 4px 10px; border-radius: 999px; white-space: nowrap; pointer-events: none; }
       .status-row { display: flex; flex-wrap: nowrap; gap: 8px; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
       .status-row::-webkit-scrollbar { height: 4px; }
       .status-row::-webkit-scrollbar-thumb { background: var(--divider-color, rgba(0,0,0,0.15)); border-radius: 999px; }
@@ -1338,6 +1487,7 @@ class FridgeCardEditor extends HTMLElement {
           { name: "analyze_entity", selector: { entity: {} } },
         ],
       },
+      { name: "snapshot_service", selector: { text: {} } },
     ];
   }
 
@@ -1353,6 +1503,7 @@ class FridgeCardEditor extends HTMLElement {
       light_entity: "Fridge light",
       door_entity: "Fridge door sensor",
       analyze_entity: "Analyze trigger (automation / script / button)",
+      snapshot_service: "Save-snapshot service (e.g. shell_command.fridge_save_snapshot) - optional, enables Save/history browsing",
     };
     return labels[schemaItem.name] || schemaItem.name;
   }

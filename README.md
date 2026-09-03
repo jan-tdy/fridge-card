@@ -8,6 +8,9 @@ AI-recognized contents.
 - Shows the latest fridge photo, with a fixed rotation set in the card
   config (0/90/180/270°) to correct a crooked camera mount, and a refresh
   button in the header to force-reload it on demand
+- Optional **Save** + ◀ ▶ **Latest** controls to keep a copy of the
+  current photo and browse back through previously saved ones (needs a
+  small one-time Home Assistant config step — see below)
 - Lists the AI-recognized items as a plain list (no checkboxes), each
   field editable directly on the card: name, quantity, condition, an AI
   confidence readout, a note, brand and expiration date
@@ -117,6 +120,7 @@ analyze_entity: automation.fridge_analysis
 | `light_entity` | no | Fridge light; shows a toggle chip |
 | `door_entity` | no | Door `binary_sensor`; shows an open/closed status chip |
 | `analyze_entity` | no | `automation`, `script` or `button` entity to trigger; shows an "Analyze fridge" button (calls `trigger`/`turn_on`/`press` as appropriate for the entity's domain) |
+| `snapshot_service` | no | `domain.service` to call for **Save** (e.g. `shell_command.fridge_save_snapshot`); shows Save + ◀ ▶ **Latest** controls once set — see [Saved snapshot history](#saved-snapshot-history) |
 
 \* At least one of `image_entity` or `image_path` is required; `image_path`
 defaults to `/local/fridge/fridge_latest.jpg`.
@@ -152,6 +156,19 @@ for good — expand it and hit **Restore** to bring an item back. If you
 add a new item under a name that's already sitting there, the card asks
 whether to restore it instead of creating a duplicate; fridge-core does
 the same automatically if a later scan still recognizes the item.
+
+### Saved snapshot history
+
+Setting `snapshot_service` turns on a **Save** button and ◀ ▶ /
+**Latest** controls on the photo. **Save** copies whatever the photo file
+currently holds to a timestamped file, so you can keep a record without
+waiting for the next automatic scan; ◀ ▶ browse back and forward through
+what's been saved, and **Latest** returns to the live photo. This needs
+one `shell_command` added to your own Home Assistant config first, since
+the card is just a browser page and can't copy a file on the server by
+itself — see [fridge-core's README](https://github.com/jan-tdy/fridge-core#optional-saved-snapshot-history)
+for the exact YAML to add. Leave `snapshot_service` unset (the default)
+to skip all of this — the card works exactly as before.
 
 ## Companion repository
 
