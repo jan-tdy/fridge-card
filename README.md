@@ -14,6 +14,8 @@ AI-recognized contents.
   view, and a button to trigger the fridge-analysis automation
 - Fully configurable from the Lovelace UI editor — no YAML required
 
+<img width="530" height="761" alt="image" src="https://github.com/user-attachments/assets/3f67f072-fbab-496e-b33e-1d22881ada52" />
+
 ## How it works
 
 The card reads its item list from a Home Assistant `todo` entity, using the
