@@ -50,6 +50,7 @@ title: Fridge
 image_entity: sensor.fridge_contents
 image_path: /local/fridge/fridge_latest.jpg
 image_rotation: 90
+image_height: 220
 todo_entity: todo.fridge_contents
 camera_entity: camera.fridge
 light_entity: light.fridge
@@ -63,6 +64,7 @@ analyze_entity: automation.fridge_analysis
 | `image_entity` | yes* | Entity whose `last_changed` is used to cache-bust the photo (e.g. the sensor updated by your recognition automation) |
 | `image_path` | yes* | URL/local path of the fridge photo |
 | `image_rotation` | no | `0`, `90`, `180` or `270` — fixed clockwise rotation applied to the photo, for a camera that isn't mounted straight (default `0`) |
+| `image_height` | no | Height of the photo box in pixels (default `220`) |
 | `todo_entity` | yes | `todo.*` entity holding the recognized items |
 | `camera_entity` | no | Camera entity; shows a "Live view" button that opens Home Assistant's live camera dialog |
 | `light_entity` | no | Fridge light; shows a toggle chip |
@@ -75,10 +77,12 @@ defaults to `/local/fridge/fridge_latest.jpg`.
 ### Editing items
 
 Click the pencil icon on any item to edit its name, description and
-expiration date, or delete it. Use **Add item** to add a new one. Editing
-calls the standard `todo.add_item` / `todo.update_item` / `todo.remove_item`
-services, so your `todo_entity` must support the corresponding features
-(create/update/delete, description, due date).
+expiration date, or delete it. Expiration dates are shown as `dd/mm/yyyy`
+(hover the badge for a relative "expires in Xd" tooltip). Use **Add item**
+to add a new one. Editing calls the standard `todo.add_item` /
+`todo.update_item` / `todo.remove_item` services, so your `todo_entity`
+must support the corresponding features (create/update/delete,
+description, due date).
 
 ## Companion repository
 

@@ -50,6 +50,12 @@ function serviceForTrigger(entityId) {
   }
 }
 
+function formatDMY(date) {
+  const d = String(date.getDate()).padStart(2, "0");
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  return `${d}/${m}/${date.getFullYear()}`;
+}
+
 function dueInfo(due) {
   if (!due) return null;
   const dueDate = new Date(due.length === 10 ? `${due}T00:00:00` : due);
@@ -60,14 +66,14 @@ function dueInfo(due) {
   startOfToday.setHours(0, 0, 0, 0);
   const days = Math.round((startOfDue - startOfToday) / 86400000);
 
-  let label;
-  if (days < 0) label = `Expired ${Math.abs(days)}d ago`;
-  else if (days === 0) label = "Expires today";
-  else if (days === 1) label = "Expires tomorrow";
-  else label = `Expires in ${days}d`;
+  let title;
+  if (days < 0) title = `Expired ${Math.abs(days)}d ago`;
+  else if (days === 0) title = "Expires today";
+  else if (days === 1) title = "Expires tomorrow";
+  else title = `Expires in ${days}d`;
 
   const cls = days < 0 ? "due-overdue" : days <= 2 ? "due-soon" : "";
-  return { label, cls };
+  return { label: formatDMY(startOfDue), title, cls };
 }
 
 class FridgeCard extends HTMLElement {
@@ -77,6 +83,7 @@ class FridgeCard extends HTMLElement {
       image_entity: "sensor.fridge_contents",
       image_path: "/local/fridge/fridge_latest.jpg",
       image_rotation: 0,
+      image_height: 220,
       todo_entity: "todo.fridge_contents",
       camera_entity: "",
       light_entity: "",
@@ -108,6 +115,7 @@ class FridgeCard extends HTMLElement {
       title: "Fridge",
       image_path: "/local/fridge/fridge_latest.jpg",
       image_rotation: 0,
+      image_height: 220,
       ...config,
     };
     this._items = [];
@@ -181,6 +189,7 @@ class FridgeCard extends HTMLElement {
 
     this._titleEl.textContent = this._config.title || "";
     root.querySelector(".header").style.display = this._config.title ? "" : "none";
+    this._imageWrapEl.style.height = `${Number(this._config.image_height) || 220}px`;
 
     this._imgEl.addEventListener("load", () => {
       this._fallbackEl.classList.remove("show");
@@ -352,7 +361,7 @@ class FridgeCard extends HTMLElement {
           ${item.description ? `<div class="item-desc">${escapeHtml(item.description)}</div>` : ""}
         </div>
         <div class="item-side">
-          ${info ? `<div class="due-chip ${info.cls}">${escapeHtml(info.label)}</div>` : ""}
+          ${info ? `<div class="due-chip ${info.cls}" title="${escapeHtml(info.title)}">${escapeHtml(info.label)}</div>` : ""}
           <button class="icon-btn edit-btn" data-action="edit-item" title="Edit">
             <ha-icon icon="mdi:pencil-outline"></ha-icon>
           </button>
@@ -441,13 +450,15 @@ class FridgeCard extends HTMLElement {
       .title { font-size: 1.2rem; font-weight: 600; color: var(--primary-text-color); }
       .icon-btn { border: none; background: var(--secondary-background-color, rgba(0,0,0,0.06)); color: var(--primary-text-color); width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background .15s ease; flex-shrink: 0; }
       .icon-btn:hover { background: var(--divider-color, rgba(0,0,0,0.12)); }
-      .image-wrap { position: relative; height: 220px; border-radius: 12px; overflow: hidden; background: var(--secondary-background-color, #eee); display: flex; align-items: center; justify-content: center; margin-bottom: 14px; }
+      .image-wrap { position: relative; border-radius: 12px; overflow: hidden; background: var(--secondary-background-color, #eee); display: flex; align-items: center; justify-content: center; margin-bottom: 14px; }
       .fridge-img { object-fit: contain; transition: transform .25s ease, max-width .25s ease, max-height .25s ease; }
       .fallback { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 6px; color: var(--secondary-text-color); font-size: 0.85rem; }
       .fallback.show { display: flex; }
       .fallback ha-icon { --mdc-icon-size: 32px; }
-      .status-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
-      .chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; background: var(--secondary-background-color, rgba(0,0,0,0.06)); color: var(--primary-text-color); font-size: 0.85rem; border: none; font-family: inherit; }
+      .status-row { display: flex; flex-wrap: nowrap; gap: 8px; margin-bottom: 14px; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
+      .status-row::-webkit-scrollbar { height: 4px; }
+      .status-row::-webkit-scrollbar-thumb { background: var(--divider-color, rgba(0,0,0,0.15)); border-radius: 999px; }
+      .chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; background: var(--secondary-background-color, rgba(0,0,0,0.06)); color: var(--primary-text-color); font-size: 0.85rem; border: none; font-family: inherit; white-space: nowrap; flex-shrink: 0; }
       .chip ha-icon { --mdc-icon-size: 18px; }
       .chip-btn { cursor: pointer; transition: background .15s ease, transform .1s ease; }
       .chip-btn:hover { background: var(--divider-color, rgba(0,0,0,0.12)); }
@@ -510,18 +521,28 @@ class FridgeCardEditor extends HTMLElement {
         ],
       },
       {
-        name: "image_rotation",
-        selector: {
-          select: {
-            mode: "dropdown",
-            options: [
-              { value: 0, label: "No rotation" },
-              { value: 90, label: "90° clockwise" },
-              { value: 180, label: "180°" },
-              { value: 270, label: "270° clockwise (90° counter-clockwise)" },
-            ],
+        type: "grid",
+        name: "",
+        schema: [
+          {
+            name: "image_rotation",
+            selector: {
+              select: {
+                mode: "dropdown",
+                options: [
+                  { value: 0, label: "No rotation" },
+                  { value: 90, label: "90° clockwise" },
+                  { value: 180, label: "180°" },
+                  { value: 270, label: "270° clockwise (90° counter-clockwise)" },
+                ],
+              },
+            },
           },
-        },
+          {
+            name: "image_height",
+            selector: { number: { min: 80, max: 600, step: 10, mode: "box", unit_of_measurement: "px" } },
+          },
+        ],
       },
       { name: "todo_entity", selector: { entity: { domain: "todo" } } },
       {
@@ -549,6 +570,7 @@ class FridgeCardEditor extends HTMLElement {
       image_entity: "Fridge photo sensor (used to bust the image cache)",
       image_path: "Image URL / local path",
       image_rotation: "Image rotation (fixes a crooked camera mount)",
+      image_height: "Image height",
       todo_entity: "Recognized items (todo entity)",
       camera_entity: "Camera (for live view)",
       light_entity: "Fridge light",
