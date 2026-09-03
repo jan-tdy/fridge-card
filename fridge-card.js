@@ -15,7 +15,7 @@
  * https://github.com/jan-tdy/fridge-card
  */
 
-const CARD_VERSION = "1.3.0";
+const CARD_VERSION = "1.4.0";
 
 function fireEvent(node, type, detail = {}, options = {}) {
   const event = new Event(type, {
@@ -102,6 +102,24 @@ function stripBoxMarker(description) {
   return String(description || "").replace(BOX_MARKER_RE, " ").trim();
 }
 
+// The brand is set by hand on the card and never touched by the AI (the
+// fridge-core automation carries it forward across re-scans) - stored the
+// same way as the box, as a trailing "[[brand:...]]" marker.
+const BRAND_MARKER_RE = /\s*\[\[brand:([^\]]*)\]\]\s*/;
+
+function extractBrand(description) {
+  const m = BRAND_MARKER_RE.exec(String(description || ""));
+  return m ? m[1].trim() : "";
+}
+
+function stripBrandMarker(description) {
+  return String(description || "").replace(BRAND_MARKER_RE, " ").trim();
+}
+
+function stripMarkers(description) {
+  return stripBrandMarker(stripBoxMarker(description));
+}
+
 function dueInfo(due) {
   if (!due) return null;
   const dueDate = new Date(due.length === 10 ? `${due}T00:00:00` : due);
@@ -155,6 +173,10 @@ class FridgeCard extends HTMLElement {
     this._drawStart = null;
     this._drawCurrent = null;
     this._pendingBox = undefined; // undefined = untouched, object = drawn, null = explicitly cleared
+    // Snapshot of the edit form's live field values, captured just before a
+    // re-render that can happen mid-edit (e.g. finishing a hand-drawn box),
+    // so in-progress typing isn't lost when the row's HTML is rebuilt.
+    this._draft = null;
   }
 
   setConfig(config) {
@@ -178,6 +200,7 @@ class FridgeCard extends HTMLElement {
     this._drawingUid = null;
     this._drawActive = false;
     this._pendingBox = undefined;
+    this._draft = null;
     this._build();
     if (this._hass) this._refreshAll();
   }
@@ -412,7 +435,23 @@ class FridgeCard extends HTMLElement {
       return;
     }
     this._pendingBox = box;
+    this._captureDraft();
     this._renderItems();
+  }
+
+  // Reads whatever the user has currently typed in the open edit form and
+  // stashes it, so a re-render triggered mid-edit (finishing a hand-drawn
+  // box, clearing one) doesn't reset those fields back to the item's
+  // last-saved values.
+  _captureDraft() {
+    const itemEl = this._itemsEl.querySelector(".item-editing");
+    if (!itemEl) return;
+    this._draft = {
+      name: itemEl.querySelector(".edit-name").value,
+      description: itemEl.querySelector(".edit-desc").value,
+      brand: itemEl.querySelector(".edit-brand").value,
+      due: itemEl.querySelector(".edit-due").value,
+    };
   }
 
   _boxDivHtml(box, pending, label) {
@@ -588,17 +627,30 @@ class FridgeCard extends HTMLElement {
   _itemRowHtml(item) {
     if (this._editingUid === item.uid) {
       const hasBox = this._pendingBox !== undefined ? Boolean(this._pendingBox) : Boolean(extractBox(item.description));
+      // A draft (captured just before a mid-edit re-render, e.g. finishing
+      // a hand-drawn box) always wins over the item's last-saved values,
+      // so in-progress typing survives.
+      const draft = this._draft;
+      const nameVal = draft ? draft.name : item.summary;
+      const descVal = draft ? draft.description : stripMarkers(item.description);
+      const brandVal = draft ? draft.brand : extractBrand(item.description);
+      const dueVal = draft
+        ? draft.due
+        : item.due
+          ? formatDMY(new Date(item.due.length === 10 ? `${item.due}T00:00:00` : item.due))
+          : "";
       return `
         <div class="item item-editing" data-uid="${escapeHtml(item.uid)}">
-          <input class="edit-name" type="text" value="${escapeHtml(item.summary)}" placeholder="Item name" />
-          <textarea class="edit-desc" placeholder="Description">${escapeHtml(stripBoxMarker(item.description))}</textarea>
+          <input class="edit-name" type="text" value="${escapeHtml(nameVal)}" placeholder="Item name" />
+          <textarea class="edit-desc" placeholder="Description">${escapeHtml(descVal)}</textarea>
+          <input class="edit-brand" type="text" value="${escapeHtml(brandVal)}" placeholder="Brand (set by hand, AI won't touch it)" />
           <input
             class="edit-due"
             type="text"
             inputmode="numeric"
             maxlength="10"
             placeholder="dd/mm/yyyy"
-            value="${item.due ? escapeHtml(formatDMY(new Date(item.due.length === 10 ? `${item.due}T00:00:00` : item.due))) : ""}"
+            value="${escapeHtml(dueVal)}"
           />
           <div class="frame-row">
             <span>Detection frame${hasBox ? " set" : " not set"}</span>
@@ -617,12 +669,14 @@ class FridgeCard extends HTMLElement {
     }
 
     const info = dueInfo(item.due);
-    const desc = stripBoxMarker(item.description);
+    const desc = stripMarkers(item.description);
+    const brand = extractBrand(item.description);
     return `
       <div class="item" data-uid="${escapeHtml(item.uid)}">
         <div class="item-main">
           <div class="item-name">${escapeHtml(item.summary)}</div>
           ${desc ? `<div class="item-desc">${escapeHtml(desc)}</div>` : ""}
+          ${brand ? `<div class="item-brand"><ha-icon icon="mdi:tag-outline"></ha-icon>${escapeHtml(brand)}</div>` : ""}
         </div>
         <div class="item-side">
           ${info ? `<div class="due-chip ${info.cls}" title="${escapeHtml(info.title)}">${escapeHtml(info.label)}</div>` : ""}
@@ -644,10 +698,12 @@ class FridgeCard extends HTMLElement {
     if (action === "edit-item") {
       this._editingUid = uid;
       this._pendingBox = undefined;
+      this._draft = null;
       this._renderItems();
     } else if (action === "cancel-edit") {
       this._editingUid = null;
       this._pendingBox = undefined;
+      this._draft = null;
       this._drawingUid = null;
       this._imageWrapEl.classList.remove("drawing");
       if (uid === "__new__") this._items = this._items.filter((i) => i.uid !== "__new__");
@@ -662,6 +718,7 @@ class FridgeCard extends HTMLElement {
       this._renderBoxes();
     } else if (action === "clear-box") {
       this._pendingBox = null;
+      this._captureDraft();
       this._renderItems();
     }
   }
@@ -670,6 +727,7 @@ class FridgeCard extends HTMLElement {
     if (this._items.some((i) => i.uid === "__new__")) return;
     this._editingUid = "__new__";
     this._pendingBox = undefined;
+    this._draft = null;
     this._items = [{ uid: "__new__", summary: "", description: "", due: null }, ...this._items];
     this._renderItems();
     requestAnimationFrame(() => {
@@ -681,6 +739,7 @@ class FridgeCard extends HTMLElement {
   async _saveItem(uid, itemEl) {
     const name = itemEl.querySelector(".edit-name").value.trim();
     let description = itemEl.querySelector(".edit-desc").value.trim();
+    const brand = itemEl.querySelector(".edit-brand").value.trim();
     const dueText = itemEl.querySelector(".edit-due").value.trim();
     const due = dueText ? parseDMY(dueText) : null;
     if (!name) return;
@@ -693,6 +752,10 @@ class FridgeCard extends HTMLElement {
     const box = this._pendingBox !== undefined ? this._pendingBox : existingBox;
     if (box) {
       description = `${description} [[box:${box.x1},${box.y1},${box.x2},${box.y2}]]`.trim();
+    }
+    if (brand) {
+      // Strip brackets so the value can't break out of the [[brand:...]] marker.
+      description = `${description} [[brand:${brand.replace(/[[\]]/g, "")}]]`.trim();
     }
 
     try {
@@ -718,12 +781,14 @@ class FridgeCard extends HTMLElement {
     } finally {
       this._editingUid = null;
       this._pendingBox = undefined;
+      this._draft = null;
       await this._fetchItems();
     }
   }
 
   async _deleteItem(uid) {
     this._pendingBox = undefined;
+    this._draft = null;
     if (uid === "__new__") {
       this._editingUid = null;
       this._items = this._items.filter((i) => i.uid !== "__new__");
@@ -777,6 +842,8 @@ class FridgeCard extends HTMLElement {
       .item-main { min-width: 0; }
       .item-name { font-weight: 600; color: var(--primary-text-color); }
       .item-desc { font-size: 0.85rem; color: var(--secondary-text-color); margin-top: 2px; overflow-wrap: anywhere; }
+      .item-brand { display: inline-flex; align-items: center; gap: 3px; font-size: 0.75rem; font-weight: 600; color: var(--primary-color); margin-top: 4px; }
+      .item-brand ha-icon { --mdc-icon-size: 14px; }
       .item-side { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
       .due-chip { font-size: 0.75rem; padding: 3px 8px; border-radius: 999px; background: var(--secondary-background-color); color: var(--secondary-text-color); white-space: nowrap; }
       .due-chip.due-soon { background: rgba(255,193,7,0.18); color: #b98900; }
