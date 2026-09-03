@@ -18,12 +18,18 @@
  * the Brand field also offers previously used brand names as autocomplete
  * suggestions, so a brand only needs to be typed once. A refresh button in
  * the header force-reloads the photo on demand, bypassing both the browser
- * cache and the usual entity-timestamp cache-busting.
+ * cache and the usual entity-timestamp cache-busting. A checkbox on each
+ * item marks it eaten instead of deleting it outright, tucking it into a
+ * collapsed "Eaten" section it can be restored from; adding a new item
+ * under a name that's sitting there offers to restore it instead of
+ * creating a duplicate. The layout responds to the card's own width (not
+ * the browser window) - side-by-side on a wider card, and the item list
+ * itself splitting into two columns once there's room for it.
  *
  * https://github.com/jan-tdy/fridge-card
  */
 
-const CARD_VERSION = "1.6.0";
+const CARD_VERSION = "1.7.0";
 
 function fireEvent(node, type, detail = {}, options = {}) {
   const event = new Event(type, {
@@ -239,6 +245,8 @@ class FridgeCard extends HTMLElement {
     super();
     this.attachShadow({ mode: "open" });
     this._items = [];
+    this._eatenItems = [];
+    this._eatenExpanded = false;
     this._itemsStateKey = null;
     this._editingUid = null;
     this._showBoxes = false;
@@ -272,6 +280,8 @@ class FridgeCard extends HTMLElement {
       ...config,
     };
     this._items = [];
+    this._eatenItems = [];
+    this._eatenExpanded = false;
     this._itemsStateKey = null;
     this._editingUid = null;
     this._showBoxes = this._loadShowBoxes();
@@ -346,22 +356,35 @@ class FridgeCard extends HTMLElement {
             </button>
           </div>
         </div>
-        <div class="image-wrap">
-          <img class="fridge-img" alt="Fridge contents" />
-          <div class="detection-overlay"></div>
-          <div class="fallback">
-            <ha-icon icon="mdi:image-off-outline"></ha-icon>
-            <span>No image</span>
+        <div class="body">
+          <div class="media-col">
+            <div class="image-wrap">
+              <img class="fridge-img" alt="Fridge contents" />
+              <div class="detection-overlay"></div>
+              <div class="fallback">
+                <ha-icon icon="mdi:image-off-outline"></ha-icon>
+                <span>No image</span>
+              </div>
+            </div>
+            <div class="status-row"></div>
           </div>
-        </div>
-        <div class="status-row"></div>
-        <div class="items"></div>
-        <datalist id="brand-list"></datalist>
-        <div class="add-row">
-          <button class="add-btn">
-            <ha-icon icon="mdi:plus"></ha-icon>
-            <span>Add item</span>
-          </button>
+          <div class="list-col">
+            <div class="items"></div>
+            <datalist id="brand-list"></datalist>
+            <div class="add-row">
+              <button class="add-btn">
+                <ha-icon icon="mdi:plus"></ha-icon>
+                <span>Add item</span>
+              </button>
+            </div>
+            <div class="eaten-section" hidden>
+              <button class="eaten-toggle">
+                <ha-icon icon="mdi:chevron-right"></ha-icon>
+                <span class="eaten-toggle-label">Eaten (0)</span>
+              </button>
+              <div class="eaten-list" hidden></div>
+            </div>
+          </div>
         </div>
       </ha-card>
     `;
@@ -377,6 +400,10 @@ class FridgeCard extends HTMLElement {
     this._statusRowEl = root.querySelector(".status-row");
     this._itemsEl = root.querySelector(".items");
     this._brandListEl = root.querySelector("#brand-list");
+    this._eatenSectionEl = root.querySelector(".eaten-section");
+    this._eatenToggleEl = root.querySelector(".eaten-toggle");
+    this._eatenToggleLabelEl = root.querySelector(".eaten-toggle-label");
+    this._eatenListEl = root.querySelector(".eaten-list");
 
     this._titleEl.textContent = this._config.title || "";
     this._titleEl.style.display = this._config.title ? "" : "none";
@@ -390,6 +417,13 @@ class FridgeCard extends HTMLElement {
       this._renderBoxes();
     });
     this._refreshBtnEl.addEventListener("click", () => this._hardRefreshImage());
+    this._eatenToggleEl.addEventListener("click", () => {
+      this._eatenExpanded = !this._eatenExpanded;
+      this._eatenToggleEl.classList.toggle("expanded", this._eatenExpanded);
+      this._eatenListEl.hidden = !this._eatenExpanded;
+      this._renderEatenSection();
+    });
+    this._eatenListEl.addEventListener("click", (e) => this._onEatenClick(e));
     this._updateHeaderVisibility();
 
     this._imgEl.addEventListener("load", () => {
@@ -749,7 +783,9 @@ class FridgeCard extends HTMLElement {
         type: "todo/item/list",
         entity_id: this._config.todo_entity,
       });
-      this._items = result.items || [];
+      const items = result.items || [];
+      this._items = items.filter((i) => i.status !== "completed");
+      this._eatenItems = items.filter((i) => i.status === "completed");
       this._renderItems();
     } catch (err) {
       this._itemsEl.innerHTML = `<div class="empty">Unable to load items: ${escapeHtml(err.message || err)}</div>`;
@@ -758,6 +794,7 @@ class FridgeCard extends HTMLElement {
 
   _renderItems() {
     this._renderBrandList();
+    this._renderEatenSection();
     if (!this._items.length) {
       this._itemsEl.innerHTML = `<div class="empty">No items recognized yet.</div>`;
       this._renderBoxes();
@@ -771,6 +808,42 @@ class FridgeCard extends HTMLElement {
     });
     this._itemsEl.innerHTML = sorted.map((item) => this._itemRowHtml(item)).join("");
     this._renderBoxes();
+  }
+
+  // A collapsed-by-default "Eaten" section at the bottom, so marking
+  // something eaten doesn't make it vanish for good - it can be restored
+  // (back to needs_action) if that was a mistake or the item's back.
+  _renderEatenSection() {
+    if (!this._eatenSectionEl) return;
+    const n = this._eatenItems.length;
+    this._eatenSectionEl.hidden = n === 0;
+    this._eatenToggleLabelEl.textContent = `Eaten (${n})`;
+    if (!this._eatenExpanded) return;
+    this._eatenListEl.innerHTML = this._eatenItems
+      .map(
+        (item) => `
+        <div class="eaten-row" data-uid="${escapeHtml(item.uid)}">
+          <span>${escapeHtml(item.summary)}</span>
+          <button type="button" class="text-btn" data-action="restore-eaten">Restore</button>
+        </div>`
+      )
+      .join("");
+  }
+
+  _onEatenClick(e) {
+    const btn = e.target.closest("[data-action='restore-eaten']");
+    if (!btn) return;
+    const uid = e.target.closest(".eaten-row").dataset.uid;
+    this._restoreEaten(uid);
+  }
+
+  async _restoreEaten(uid) {
+    await this._hass.callService("todo", "update_item", {
+      entity_id: this._config.todo_entity,
+      item: uid,
+      status: "needs_action",
+    });
+    await this._fetchItems();
   }
 
   // Offers every brand already used on some item as an autocomplete
@@ -843,6 +916,9 @@ class FridgeCard extends HTMLElement {
     const brand = extractBrand(item.description);
     return `
       <div class="item" data-uid="${escapeHtml(item.uid)}">
+        <button class="icon-btn eaten-btn" data-action="mark-eaten" title="Mark as eaten">
+          <ha-icon icon="mdi:checkbox-blank-circle-outline"></ha-icon>
+        </button>
         <div class="item-main">
           <div class="item-name">${escapeHtml(item.summary)}</div>
           ${
@@ -889,6 +965,8 @@ class FridgeCard extends HTMLElement {
       this._renderItems();
     } else if (action === "delete-item") {
       this._deleteItem(uid);
+    } else if (action === "mark-eaten") {
+      this._markEaten(uid);
     } else if (action === "save-item") {
       this._saveItem(uid, itemEl);
     } else if (action === "draw-box") {
@@ -953,10 +1031,32 @@ class FridgeCard extends HTMLElement {
 
     try {
       if (uid === "__new__") {
-        const payload = { entity_id: this._config.todo_entity, item: name };
-        if (description) payload.description = description;
-        if (due) payload.due_date = due;
-        await this._hass.callService("todo", "add_item", payload);
+        // Adding a new item under a name that's already sitting in the
+        // Eaten section is probably the same item again (a refill, or it
+        // was marked eaten by mistake) - offer to restore that one instead
+        // of quietly creating a duplicate.
+        const eatenMatch = this._eatenItems.find(
+          (i) => (i.summary || "").trim().toLowerCase() === name.toLowerCase()
+        );
+        if (
+          eatenMatch &&
+          confirm(`"${name}" is already in the Eaten list. Restore it instead of adding a duplicate?`)
+        ) {
+          const payload = {
+            entity_id: this._config.todo_entity,
+            item: eatenMatch.uid,
+            rename: name,
+            description,
+            status: "needs_action",
+          };
+          if (due) payload.due_date = due;
+          await this._hass.callService("todo", "update_item", payload);
+        } else {
+          const payload = { entity_id: this._config.todo_entity, item: name };
+          if (description) payload.description = description;
+          if (due) payload.due_date = due;
+          await this._hass.callService("todo", "add_item", payload);
+        }
       } else {
         const payload = {
           entity_id: this._config.todo_entity,
@@ -979,6 +1079,20 @@ class FridgeCard extends HTMLElement {
     }
   }
 
+  // Marks an item completed instead of deleting it outright - a quicker,
+  // checkbox-like "I ate this" gesture. It moves out of the active list
+  // into the "Eaten" section below (see _renderEatenSection) instead of
+  // being gone for good, and fridge-core reactivates it by name instead of
+  // adding a duplicate if it turns out the item is still in the fridge.
+  async _markEaten(uid) {
+    await this._hass.callService("todo", "update_item", {
+      entity_id: this._config.todo_entity,
+      item: uid,
+      status: "completed",
+    });
+    await this._fetchItems();
+  }
+
   async _deleteItem(uid) {
     this._pendingBox = undefined;
     this._draft = null;
@@ -995,9 +1109,12 @@ class FridgeCard extends HTMLElement {
 
   _styles() {
     return `
-      :host { display: block; }
+      :host { display: block; container-type: inline-size; container-name: fridge-card; }
       ha-card { padding: 16px; overflow: hidden; }
       .header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+      .body { display: flex; flex-direction: column; gap: 14px; }
+      .media-col { display: flex; flex-direction: column; }
+      .list-col { min-width: 0; }
       .header-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
       .refresh-btn ha-icon { --mdc-icon-size: 18px; }
       .title { font-size: 1.2rem; font-weight: 600; color: var(--primary-text-color); }
@@ -1019,7 +1136,7 @@ class FridgeCard extends HTMLElement {
       .fallback { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 6px; color: var(--secondary-text-color); font-size: 0.85rem; }
       .fallback.show { display: flex; }
       .fallback ha-icon { --mdc-icon-size: 32px; }
-      .status-row { display: flex; flex-wrap: nowrap; gap: 8px; margin-bottom: 14px; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
+      .status-row { display: flex; flex-wrap: nowrap; gap: 8px; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
       .status-row::-webkit-scrollbar { height: 4px; }
       .status-row::-webkit-scrollbar-thumb { background: var(--divider-color, rgba(0,0,0,0.15)); border-radius: 999px; }
       .chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; background: var(--secondary-background-color, rgba(0,0,0,0.06)); color: var(--primary-text-color); font-size: 0.85rem; border: none; font-family: inherit; white-space: nowrap; flex-shrink: 0; }
@@ -1032,9 +1149,11 @@ class FridgeCard extends HTMLElement {
       .chip-accent { background: var(--primary-color); color: var(--text-primary-color, #fff); }
       .chip-accent:hover { filter: brightness(1.06); }
       .items { display: flex; flex-direction: column; }
-      .item { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 10px 4px; border-bottom: 1px solid var(--divider-color, rgba(0,0,0,0.08)); }
+      .item { display: flex; align-items: flex-start; gap: 10px; padding: 10px 4px; border-bottom: 1px solid var(--divider-color, rgba(0,0,0,0.08)); }
       .item:last-child { border-bottom: none; }
-      .item-main { min-width: 0; }
+      .eaten-btn { margin-top: 2px; }
+      .eaten-btn ha-icon { --mdc-icon-size: 20px; }
+      .item-main { min-width: 0; flex: 1 1 auto; }
       .item-name { font-weight: 600; color: var(--primary-text-color); }
       .item-desc { font-size: 0.85rem; color: var(--secondary-text-color); margin-top: 2px; overflow-wrap: anywhere; }
       .item-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
@@ -1065,6 +1184,28 @@ class FridgeCard extends HTMLElement {
       .add-row { margin-top: 6px; }
       .add-btn { width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 10px; border-radius: 10px; border: 1px dashed var(--divider-color, rgba(0,0,0,0.2)); background: none; color: var(--secondary-text-color); font-family: inherit; font-size: 0.9rem; cursor: pointer; transition: background .15s ease, color .15s ease; }
       .add-btn:hover { background: var(--secondary-background-color, rgba(0,0,0,0.05)); color: var(--primary-text-color); }
+      .eaten-section { margin-top: 10px; }
+      .eaten-toggle { display: flex; align-items: center; gap: 4px; padding: 6px 4px; border: none; background: none; color: var(--secondary-text-color); font-family: inherit; font-size: 0.85rem; cursor: pointer; width: 100%; text-align: left; }
+      .eaten-toggle ha-icon { --mdc-icon-size: 18px; transition: transform .15s ease; }
+      .eaten-toggle.expanded ha-icon { transform: rotate(90deg); }
+      .eaten-list { display: flex; flex-direction: column; margin-top: 2px; }
+      .eaten-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 4px; font-size: 0.85rem; color: var(--secondary-text-color); border-bottom: 1px solid var(--divider-color, rgba(0,0,0,0.06)); }
+      .eaten-row:last-child { border-bottom: none; }
+      /* Placed last so these win the cascade over the unconditional rules
+         above regardless of source order within a matching @container.
+         Roughly 2+ columns of a Home Assistant sections grid: photo moves
+         to a fixed-width left column, items take the rest on the right. */
+      @container fridge-card (min-width: 520px) {
+        .body { flex-direction: row; align-items: flex-start; }
+        .media-col { flex: 0 0 240px; }
+        .list-col { flex: 1 1 auto; }
+      }
+      /* Roughly 4+ columns: enough room for the items themselves to flow
+         into two columns instead of one long list. */
+      @container fridge-card (min-width: 820px) {
+        .items { display: grid; grid-template-columns: repeat(2, 1fr); align-items: start; gap: 0 16px; }
+        .items .item-editing { grid-column: 1 / -1; }
+      }
     `;
   }
 }
