@@ -15,7 +15,7 @@
  * https://github.com/jan-tdy/fridge-card
  */
 
-const CARD_VERSION = "1.2.0";
+const CARD_VERSION = "1.3.0";
 
 function fireEvent(node, type, detail = {}, options = {}) {
   const event = new Event(type, {
@@ -415,19 +415,20 @@ class FridgeCard extends HTMLElement {
     this._renderItems();
   }
 
-  _boxDivHtml(box, pending) {
+  _boxDivHtml(box, pending, label) {
     const left = Math.min(box.x1, box.x2);
     const top = Math.min(box.y1, box.y2);
     const width = Math.abs(box.x2 - box.x1);
     const height = Math.abs(box.y2 - box.y1);
-    return `<div class="detection-box${pending ? " pending" : ""}" style="left:${left}%; top:${top}%; width:${width}%; height:${height}%;"></div>`;
+    const labelHtml = label ? `<span class="detection-label">${escapeHtml(label)}</span>` : "";
+    return `<div class="detection-box${pending ? " pending" : ""}" style="left:${left}%; top:${top}%; width:${width}%; height:${height}%;">${labelHtml}</div>`;
   }
 
-  // Draws one rectangle per item that carries an AI-estimated box (see
-  // extractBox) when detection frames are toggled on, plus - always,
-  // regardless of the toggle - the box (pending draw, existing, or a
-  // live drag preview) of whichever item is currently being edited, so
-  // the user can see what they're placing.
+  // Draws one rectangle (with a truncated name tag) per item that carries
+  // an AI-estimated box (see extractBox) when detection frames are toggled
+  // on, plus - always, regardless of the toggle - the box (pending draw,
+  // existing, or a live drag preview) of whichever item is currently being
+  // edited, so the user can see what they're placing.
   _renderBoxes() {
     if (!this._overlayEl) return;
     const withBoxes = this._items
@@ -441,15 +442,16 @@ class FridgeCard extends HTMLElement {
     if (this._showBoxes) {
       for (const { item, box } of withBoxes) {
         if (item.uid === this._editingUid) continue; // handled below instead
-        parts.push(this._boxDivHtml(box, false));
+        parts.push(this._boxDivHtml(box, false, item.summary));
       }
     }
 
+    const editingItem = this._editingUid ? this._items.find((i) => i.uid === this._editingUid) : null;
+
     if (this._editingUid && this._drawingUid !== this._editingUid) {
-      const editingItem = this._items.find((i) => i.uid === this._editingUid);
       const box =
         this._pendingBox !== undefined ? this._pendingBox : editingItem ? extractBox(editingItem.description) : null;
-      if (box) parts.push(this._boxDivHtml(box, true));
+      if (box) parts.push(this._boxDivHtml(box, true, editingItem ? editingItem.summary : ""));
     }
 
     if (this._drawActive && this._drawStart && this._drawCurrent) {
@@ -461,7 +463,8 @@ class FridgeCard extends HTMLElement {
             x2: Math.max(this._drawStart.x, this._drawCurrent.x),
             y2: Math.max(this._drawStart.y, this._drawCurrent.y),
           },
-          true
+          true,
+          editingItem ? editingItem.summary : ""
         )
       );
     }
@@ -751,6 +754,8 @@ class FridgeCard extends HTMLElement {
       .detection-overlay { position: absolute; top: 50%; left: 50%; pointer-events: none; transition: transform .25s ease, width .25s ease, height .25s ease; }
       .detection-box { position: absolute; border: 2px solid #ff3b3b; border-radius: 3px; box-shadow: 0 0 0 1px rgba(0,0,0,0.35); }
       .detection-box.pending { border-color: #2196f3; border-style: dashed; background: rgba(33,150,243,0.1); }
+      .detection-label { position: absolute; top: 0; left: 0; max-width: 130px; background: #ff3b3b; color: #fff; font-size: 11px; font-weight: 600; line-height: 1.5; padding: 1px 6px; border-radius: 0 0 4px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .detection-box.pending .detection-label { background: #2196f3; }
       .fallback { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 6px; color: var(--secondary-text-color); font-size: 0.85rem; }
       .fallback.show { display: flex; }
       .fallback ha-icon { --mdc-icon-size: 32px; }
