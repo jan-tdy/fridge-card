@@ -5,7 +5,8 @@ AI-recognized contents.
 
 ![type](https://img.shields.io/badge/type-lovelace--card-blue)
 
-- Shows the latest fridge photo, rotatable (0/90/180/270°, remembered per browser)
+- Shows the latest fridge photo, with a fixed rotation set in the card
+  config (0/90/180/270°) to correct a crooked camera mount
 - Lists the AI-recognized items as a plain list (no checkboxes) — name,
   description and expiration date, all editable directly on the card
 - Add / edit / delete items in place
@@ -48,6 +49,7 @@ type: custom:fridge-card
 title: Fridge
 image_entity: sensor.fridge_contents
 image_path: /local/fridge/fridge_latest.jpg
+image_rotation: 90
 todo_entity: todo.fridge_contents
 camera_entity: camera.fridge
 light_entity: light.fridge
@@ -60,6 +62,7 @@ analyze_entity: automation.fridge_analysis
 | `title` | no | Card header text |
 | `image_entity` | yes* | Entity whose `last_changed` is used to cache-bust the photo (e.g. the sensor updated by your recognition automation) |
 | `image_path` | yes* | URL/local path of the fridge photo |
+| `image_rotation` | no | `0`, `90`, `180` or `270` — fixed clockwise rotation applied to the photo, for a camera that isn't mounted straight (default `0`) |
 | `todo_entity` | yes | `todo.*` entity holding the recognized items |
 | `camera_entity` | no | Camera entity; shows a "Live view" button that opens Home Assistant's live camera dialog |
 | `light_entity` | no | Fridge light; shows a toggle chip |
@@ -76,3 +79,10 @@ expiration date, or delete it. Use **Add item** to add a new one. Editing
 calls the standard `todo.add_item` / `todo.update_item` / `todo.remove_item`
 services, so your `todo_entity` must support the corresponding features
 (create/update/delete, description, due date).
+
+## Companion repository
+
+This card is the Lovelace UI half of the fridge project. The other half —
+capturing photos from the esp32-cam, running AI recognition and writing
+the results into the `todo`/`sensor` entities this card reads — lives in
+[jan-tdy/fridge-core](https://github.com/jan-tdy/fridge-core).

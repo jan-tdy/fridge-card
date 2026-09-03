@@ -2,7 +2,8 @@
  * Fridge Card
  * A modern Home Assistant Lovelace card for an AI-recognized fridge inventory.
  *
- * Shows the latest fridge photo (rotatable), a plain list of recognized items
+ * Shows the latest fridge photo (rotation is set once in the card config, to
+ * correct for a crooked camera mount), a plain list of recognized items
  * (name, description, expiration date - all editable in place, no checkboxes),
  * plus quick controls for the fridge light, door sensor, live camera view and
  * triggering a re-analysis of the fridge contents.
@@ -75,6 +76,7 @@ class FridgeCard extends HTMLElement {
       title: "Fridge",
       image_entity: "sensor.fridge_contents",
       image_path: "/local/fridge/fridge_latest.jpg",
+      image_rotation: 0,
       todo_entity: "todo.fridge_contents",
       camera_entity: "",
       light_entity: "",
@@ -93,7 +95,6 @@ class FridgeCard extends HTMLElement {
     this._items = [];
     this._itemsStateKey = null;
     this._editingUid = null;
-    this._rotation = 0;
   }
 
   setConfig(config) {
@@ -106,12 +107,12 @@ class FridgeCard extends HTMLElement {
     this._config = {
       title: "Fridge",
       image_path: "/local/fridge/fridge_latest.jpg",
+      image_rotation: 0,
       ...config,
     };
     this._items = [];
     this._itemsStateKey = null;
     this._editingUid = null;
-    this._rotation = this._loadRotation();
     this._build();
     if (this._hass) this._refreshAll();
   }
@@ -145,27 +146,6 @@ class FridgeCard extends HTMLElement {
     this._fetchItems();
   }
 
-  _loadRotation() {
-    try {
-      const v = localStorage.getItem(this._rotationKey());
-      return v ? parseInt(v, 10) || 0 : 0;
-    } catch (e) {
-      return 0;
-    }
-  }
-
-  _rotationKey() {
-    return `fridge-card-rotation-${this._config.image_entity || this._config.image_path}`;
-  }
-
-  _saveRotation() {
-    try {
-      localStorage.setItem(this._rotationKey(), String(this._rotation));
-    } catch (e) {
-      /* storage unavailable, ignore */
-    }
-  }
-
   _build() {
     const root = this.shadowRoot;
     root.innerHTML = `
@@ -173,9 +153,6 @@ class FridgeCard extends HTMLElement {
       <ha-card>
         <div class="header">
           <div class="title"></div>
-          <button class="icon-btn rotate-btn" title="Rotate image">
-            <ha-icon icon="mdi:rotate-right"></ha-icon>
-          </button>
         </div>
         <div class="image-wrap">
           <img class="fridge-img" alt="Fridge contents" />
@@ -203,13 +180,7 @@ class FridgeCard extends HTMLElement {
     this._itemsEl = root.querySelector(".items");
 
     this._titleEl.textContent = this._config.title || "";
-    this._titleEl.style.display = this._config.title ? "" : "none";
-
-    root.querySelector(".rotate-btn").addEventListener("click", () => {
-      this._rotation = (this._rotation + 90) % 360;
-      this._saveRotation();
-      this._applyImageTransform();
-    });
+    root.querySelector(".header").style.display = this._config.title ? "" : "none";
 
     this._imgEl.addEventListener("load", () => {
       this._fallbackEl.classList.remove("show");
@@ -233,7 +204,7 @@ class FridgeCard extends HTMLElement {
 
   _applyImageTransform() {
     if (!this._imgEl || !this._imageWrapEl) return;
-    const rot = this._rotation;
+    const rot = Number(this._config.image_rotation) || 0;
     this._imgEl.style.transform = `rotate(${rot}deg)`;
     const swapped = rot === 90 || rot === 270;
     if (swapped) {
@@ -538,6 +509,20 @@ class FridgeCardEditor extends HTMLElement {
           { name: "image_path", selector: { text: {} } },
         ],
       },
+      {
+        name: "image_rotation",
+        selector: {
+          select: {
+            mode: "dropdown",
+            options: [
+              { value: 0, label: "No rotation" },
+              { value: 90, label: "90° clockwise" },
+              { value: 180, label: "180°" },
+              { value: 270, label: "270° clockwise (90° counter-clockwise)" },
+            ],
+          },
+        },
+      },
       { name: "todo_entity", selector: { entity: { domain: "todo" } } },
       {
         type: "grid",
@@ -563,6 +548,7 @@ class FridgeCardEditor extends HTMLElement {
       title: "Card title",
       image_entity: "Fridge photo sensor (used to bust the image cache)",
       image_path: "Image URL / local path",
+      image_rotation: "Image rotation (fixes a crooked camera mount)",
       todo_entity: "Recognized items (todo entity)",
       camera_entity: "Camera (for live view)",
       light_entity: "Fridge light",
