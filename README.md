@@ -45,7 +45,8 @@ AI-recognized contents.
   view, and a button to trigger the fridge-analysis automation
 - Fully configurable from the Lovelace UI editor — no YAML required
 
-<img width="530" height="761" alt="image" src="https://github.com/user-attachments/assets/3f67f072-fbab-496e-b33e-1d22881ada52" />
+<img width="1610" height="682" alt="image" src="https://github.com/user-attachments/assets/75e08cbb-0770-480c-953e-8a6b58193326" />
+
 
 ## How it works
 
