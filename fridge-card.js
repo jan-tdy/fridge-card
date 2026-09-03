@@ -3,20 +3,27 @@
  * A modern Home Assistant Lovelace card for an AI-recognized fridge inventory.
  *
  * Shows the latest fridge photo (rotation is set once in the card config, to
- * correct for a crooked camera mount), a plain list of recognized items
- * (name, description, expiration date - all editable in place, no checkboxes),
+ * correct for a crooked camera mount), a plain list of recognized items -
+ * name, quantity, condition, an AI confidence readout, a note, brand and
+ * expiration date, each its own field and editable in place, no checkboxes -
  * plus quick controls for the fridge light, door sensor, live camera view and
  * triggering a re-analysis of the fridge contents. Optionally overlays each
  * item's AI-estimated bounding box on the photo (toggle in the header) - the
  * box coordinates come from a companion fridge-core automation, or can be
  * drawn by hand on the photo while editing an item when the AI gets it
- * wrong or skips it. The Brand field offers previously used brand names as
- * autocomplete suggestions, so a brand only needs to be typed out once.
+ * wrong or skips it - tapping a box on the photo (whether or not frames are
+ * currently toggled on) jumps straight to editing that item. Editing
+ * quantity, condition, note or brand (or drawing a box by hand) protects
+ * that field from being overwritten by a fresh AI guess on the next scan;
+ * the Brand field also offers previously used brand names as autocomplete
+ * suggestions, so a brand only needs to be typed once. A refresh button in
+ * the header force-reloads the photo on demand, bypassing both the browser
+ * cache and the usual entity-timestamp cache-busting.
  *
  * https://github.com/jan-tdy/fridge-card
  */
 
-const CARD_VERSION = "1.5.0";
+const CARD_VERSION = "1.6.0";
 
 function fireEvent(node, type, detail = {}, options = {}) {
   const event = new Event(type, {
@@ -124,8 +131,68 @@ function stripBrandMarker(description) {
   return String(description || "").replace(BRAND_MARKER_RE, " ").trim();
 }
 
+// Quantity, condition ("openness") and note are split into their own fields
+// instead of one free-text description. Each has an AI marker (refreshed on
+// every scan) and a "manual" marker - a trailing "m" on the key, e.g.
+// "[[qtym:3 pieces]]" - written whenever the field is edited on the card, so
+// fridge-core keeps the hand-typed value instead of overwriting it with a
+// fresh (and possibly wrong) AI guess on the next scan. Same idea as the
+// manually-drawn detection box. Confidence is purely informational (the AI's
+// own estimate of its guess) and always reflects the latest scan.
+const QTY_RE = /\s*\[\[qty(m)?:([^\]]*)\]\]\s*/;
+const COND_RE = /\s*\[\[cond(m)?:([^\]]*)\]\]\s*/;
+const NOTE_RE = /\s*\[\[note(m)?:([^\]]*)\]\]\s*/;
+const CONF_RE = /\s*\[\[conf:([^\]]*)\]\]\s*/;
+
+function extractField(re, description) {
+  const m = re.exec(String(description || ""));
+  if (!m) return null;
+  return { value: m[2].trim(), manual: Boolean(m[1]) };
+}
+
+function fieldValue(extractFn, description) {
+  const f = extractFn(description);
+  return f ? f.value : "";
+}
+
+function fieldMarker(key, value, manual) {
+  return `[[${key}${manual ? "m" : ""}:${value}]]`;
+}
+
+function stripField(re, description) {
+  return String(description || "").replace(re, " ").trim();
+}
+
+function extractQty(description) {
+  return extractField(QTY_RE, description);
+}
+
+function extractCond(description) {
+  return extractField(COND_RE, description);
+}
+
+function extractConf(description) {
+  const m = CONF_RE.exec(String(description || ""));
+  return m ? m[1].trim() : "";
+}
+
+function stripAllFieldMarkers(description) {
+  return stripField(CONF_RE, stripField(NOTE_RE, stripField(COND_RE, stripField(QTY_RE, description))));
+}
+
 function stripMarkers(description) {
-  return stripBrandMarker(stripBoxMarker(description));
+  return stripAllFieldMarkers(stripBrandMarker(stripBoxMarker(description)));
+}
+
+// Legacy items (created before quantity/condition/note existed as separate
+// fields) have their free text directly in the description with no markers
+// at all - treat any of that leftover text as the note, so old items keep
+// showing something instead of going blank.
+function extractNote(description) {
+  const marked = extractField(NOTE_RE, description);
+  if (marked) return marked;
+  const leftover = stripMarkers(description);
+  return leftover ? { value: leftover, manual: false } : null;
 }
 
 function dueInfo(due) {
@@ -175,6 +242,9 @@ class FridgeCard extends HTMLElement {
     this._itemsStateKey = null;
     this._editingUid = null;
     this._showBoxes = false;
+    // Timestamp behind the currently-shown photo (entity last_changed, or a
+    // manual "now" from a hard refresh) - see _updateImage/_hardRefreshImage.
+    this._shownTs = null;
     // Manual box drawing (draw-on-photo) state.
     this._drawingUid = null;
     this._drawActive = false;
@@ -205,6 +275,7 @@ class FridgeCard extends HTMLElement {
     this._itemsStateKey = null;
     this._editingUid = null;
     this._showBoxes = this._loadShowBoxes();
+    this._shownTs = null;
     this._drawingUid = null;
     this._drawActive = false;
     this._pendingBox = undefined;
@@ -265,10 +336,15 @@ class FridgeCard extends HTMLElement {
       <ha-card>
         <div class="header">
           <div class="title"></div>
-          <button class="boxes-toggle" data-action="toggle-boxes" hidden>
-            <ha-icon icon="mdi:vector-square"></ha-icon>
-            <span>Detection frames</span>
-          </button>
+          <div class="header-actions">
+            <button class="icon-btn refresh-btn" title="Refresh photo">
+              <ha-icon icon="mdi:refresh"></ha-icon>
+            </button>
+            <button class="boxes-toggle" data-action="toggle-boxes" hidden>
+              <ha-icon icon="mdi:vector-square"></ha-icon>
+              <span>Detection frames</span>
+            </button>
+          </div>
         </div>
         <div class="image-wrap">
           <img class="fridge-img" alt="Fridge contents" />
@@ -292,6 +368,7 @@ class FridgeCard extends HTMLElement {
 
     this._headerEl = root.querySelector(".header");
     this._titleEl = root.querySelector(".title");
+    this._refreshBtnEl = root.querySelector(".refresh-btn");
     this._boxesToggleEl = root.querySelector(".boxes-toggle");
     this._imgEl = root.querySelector(".fridge-img");
     this._imageWrapEl = root.querySelector(".image-wrap");
@@ -312,6 +389,7 @@ class FridgeCard extends HTMLElement {
       this._boxesToggleEl.classList.toggle("active", this._showBoxes);
       this._renderBoxes();
     });
+    this._refreshBtnEl.addEventListener("click", () => this._hardRefreshImage());
     this._updateHeaderVisibility();
 
     this._imgEl.addEventListener("load", () => {
@@ -337,6 +415,7 @@ class FridgeCard extends HTMLElement {
 
     this._imageWrapEl.addEventListener("pointerdown", (e) => this._onDrawStart(e));
     this._imageWrapEl.addEventListener("pointermove", (e) => this._onDrawMove(e));
+    this._imageWrapEl.addEventListener("click", (e) => this._onImageClick(e));
     // _build() can re-run (e.g. every keystroke in the config editor's live
     // preview); only ever attach one window-level pointerup listener.
     if (!this._pointerUpBound) {
@@ -376,11 +455,11 @@ class FridgeCard extends HTMLElement {
     }
   }
 
+  // The header always shows now that it also holds the photo refresh
+  // button (useful regardless of title/detection-frames config).
   _updateHeaderVisibility() {
     if (!this._headerEl) return;
-    const hasTitle = Boolean(this._config.title);
-    const hasBoxes = !this._boxesToggleEl.hasAttribute("hidden");
-    this._headerEl.style.display = hasTitle || hasBoxes ? "" : "none";
+    this._headerEl.style.display = "";
   }
 
   // Converts a pointer event's screen position into a percentage (0-100)
@@ -450,6 +529,43 @@ class FridgeCard extends HTMLElement {
     this._renderItems();
   }
 
+  // A plain tap/click on the photo (not a drag-to-draw) jumps straight to
+  // editing whichever item's box contains that point - regardless of
+  // whether detection frames are currently toggled on, since the box data
+  // itself doesn't depend on that. Picks the smallest-area match if boxes
+  // overlap; does nothing if the tap didn't land on any box.
+  _onImageClick(e) {
+    if (this._drawingUid) return; // let draw-on-photo handle its own click
+    const pt = this._pointerToBoxPercent(e.clientX, e.clientY);
+    let best = null;
+    let bestArea = Infinity;
+    for (const item of this._items) {
+      const box = extractBox(item.description);
+      if (!box) continue;
+      const x1 = Math.min(box.x1, box.x2);
+      const x2 = Math.max(box.x1, box.x2);
+      const y1 = Math.min(box.y1, box.y2);
+      const y2 = Math.max(box.y1, box.y2);
+      if (pt.x < x1 || pt.x > x2 || pt.y < y1 || pt.y > y2) continue;
+      const area = (x2 - x1) * (y2 - y1);
+      if (area < bestArea) {
+        bestArea = area;
+        best = item;
+      }
+    }
+    if (!best || best.uid === this._editingUid) return;
+    this._editingUid = best.uid;
+    this._pendingBox = undefined;
+    this._draft = null;
+    this._drawingUid = null;
+    this._imageWrapEl.classList.remove("drawing");
+    this._renderItems();
+    requestAnimationFrame(() => {
+      const el = this._itemsEl.querySelector(".item-editing");
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  }
+
   // Reads whatever the user has currently typed in the open edit form and
   // stashes it, so a re-render triggered mid-edit (finishing a hand-drawn
   // box, clearing one) doesn't reset those fields back to the item's
@@ -459,7 +575,9 @@ class FridgeCard extends HTMLElement {
     if (!itemEl) return;
     this._draft = {
       name: itemEl.querySelector(".edit-name").value,
-      description: itemEl.querySelector(".edit-desc").value,
+      qty: itemEl.querySelector(".edit-qty").value,
+      cond: itemEl.querySelector(".edit-cond").value,
+      note: itemEl.querySelector(".edit-note").value,
       brand: itemEl.querySelector(".edit-brand").value,
       due: itemEl.querySelector(".edit-due").value,
     };
@@ -524,16 +642,35 @@ class FridgeCard extends HTMLElement {
 
   _updateImage() {
     const cfg = this._config;
-    let url = cfg.image_path;
+    let ts = null;
     if (cfg.image_entity) {
       const st = this._hass.states[cfg.image_entity];
-      const ts = st ? Math.floor(new Date(st.last_changed).getTime() / 1000) : Math.floor(Date.now() / 1000);
-      url = `${cfg.image_path}?v=${ts}`;
+      ts = st ? Math.floor(new Date(st.last_changed).getTime() / 1000) : Math.floor(Date.now() / 1000);
     }
+    // Once a photo has been shown, only replace it for a genuinely newer
+    // timestamp. Without this, a manual hard refresh (which jumps the
+    // shown timestamp to "now") would get immediately undone by the very
+    // next tick recomputing the same, unchanged entity/no-entity state.
+    if (this._shownTs !== null) {
+      if (ts === null || ts <= this._shownTs) return;
+    }
+    this._shownTs = ts;
+    const url = ts !== null ? `${cfg.image_path}?v=${ts}` : cfg.image_path;
     if (this._imgEl.dataset.src !== url) {
       this._imgEl.dataset.src = url;
       this._imgEl.src = url;
     }
+  }
+
+  // Forces an immediate reload of the photo, bypassing both the browser
+  // cache and the entity-timestamp cache-busting above - useful when a new
+  // snapshot is ready on disk but the image_entity's last_changed hasn't
+  // ticked (e.g. its state value happened not to change).
+  _hardRefreshImage() {
+    this._shownTs = Math.floor(Date.now() / 1000);
+    const url = `${this._config.image_path}?v=${this._shownTs}`;
+    this._imgEl.dataset.src = url;
+    this._imgEl.src = url;
   }
 
   _onStatusClick(e) {
@@ -654,8 +791,11 @@ class FridgeCard extends HTMLElement {
       // so in-progress typing survives.
       const draft = this._draft;
       const nameVal = draft ? draft.name : item.summary;
-      const descVal = draft ? draft.description : stripMarkers(item.description);
+      const qtyVal = draft ? draft.qty : fieldValue(extractQty, item.description);
+      const condVal = draft ? draft.cond : fieldValue(extractCond, item.description);
+      const noteVal = draft ? draft.note : fieldValue(extractNote, item.description);
       const brandVal = draft ? draft.brand : extractBrand(item.description);
+      const confVal = extractConf(item.description);
       const dueVal = draft
         ? draft.due
         : item.due
@@ -664,7 +804,12 @@ class FridgeCard extends HTMLElement {
       return `
         <div class="item item-editing" data-uid="${escapeHtml(item.uid)}">
           <input class="edit-name" type="text" value="${escapeHtml(nameVal)}" placeholder="Item name" />
-          <textarea class="edit-desc" placeholder="Description">${escapeHtml(descVal)}</textarea>
+          <div class="field-grid">
+            <input class="edit-qty" type="text" value="${escapeHtml(qtyVal)}" placeholder="Quantity (e.g. 2 pieces)" />
+            <input class="edit-cond" type="text" value="${escapeHtml(condVal)}" placeholder="Condition (e.g. opened)" />
+          </div>
+          ${confVal ? `<div class="edit-conf">AI confidence: ${escapeHtml(confVal)}%</div>` : ""}
+          <textarea class="edit-note" placeholder="Note">${escapeHtml(noteVal)}</textarea>
           <input class="edit-brand" type="text" list="brand-list" value="${escapeHtml(brandVal)}" placeholder="Brand (set by hand, AI won't touch it)" />
           <input
             class="edit-due"
@@ -691,13 +836,25 @@ class FridgeCard extends HTMLElement {
     }
 
     const info = dueInfo(item.due);
-    const desc = stripMarkers(item.description);
+    const qty = fieldValue(extractQty, item.description);
+    const cond = fieldValue(extractCond, item.description);
+    const note = fieldValue(extractNote, item.description);
+    const conf = extractConf(item.description);
     const brand = extractBrand(item.description);
     return `
       <div class="item" data-uid="${escapeHtml(item.uid)}">
         <div class="item-main">
           <div class="item-name">${escapeHtml(item.summary)}</div>
-          ${desc ? `<div class="item-desc">${escapeHtml(desc)}</div>` : ""}
+          ${
+            qty || cond || conf
+              ? `<div class="item-meta">
+                  ${qty ? `<span class="meta-chip"><ha-icon icon="mdi:counter"></ha-icon>${escapeHtml(qty)}</span>` : ""}
+                  ${cond ? `<span class="meta-chip"><ha-icon icon="mdi:package-variant-closed"></ha-icon>${escapeHtml(cond)}</span>` : ""}
+                  ${conf ? `<span class="meta-chip meta-conf">${escapeHtml(conf)}%</span>` : ""}
+                </div>`
+              : ""
+          }
+          ${note ? `<div class="item-desc">${escapeHtml(note)}</div>` : ""}
           ${brand ? `<div class="item-brand"><ha-icon icon="mdi:tag-outline"></ha-icon>${escapeHtml(brand)}</div>` : ""}
         </div>
         <div class="item-side">
@@ -760,7 +917,9 @@ class FridgeCard extends HTMLElement {
 
   async _saveItem(uid, itemEl) {
     const name = itemEl.querySelector(".edit-name").value.trim();
-    let description = itemEl.querySelector(".edit-desc").value.trim();
+    const qty = itemEl.querySelector(".edit-qty").value.trim();
+    const cond = itemEl.querySelector(".edit-cond").value.trim();
+    const note = itemEl.querySelector(".edit-note").value.trim();
     const brand = itemEl.querySelector(".edit-brand").value.trim();
     const dueText = itemEl.querySelector(".edit-due").value.trim();
     const due = dueText ? parseDMY(dueText) : null;
@@ -771,14 +930,26 @@ class FridgeCard extends HTMLElement {
     // it for display, so it would otherwise be lost until the next scan).
     const existing = this._items.find((i) => i.uid === uid);
     const existingBox = existing ? extractBox(existing.description) : null;
+    const existingConf = existing ? extractConf(existing.description) : "";
     const box = this._pendingBox !== undefined ? this._pendingBox : existingBox;
-    if (box) {
-      description = `${description} ${boxMarker(box)}`.trim();
-    }
+
+    // Quantity/condition/note are always written back through the "manual"
+    // marker when saved from the card - same idea as a hand-drawn detection
+    // box - so fridge-core keeps a hand-typed correction instead of
+    // overwriting it with a fresh (and possibly wrong) AI guess on the next
+    // scan. Confidence is purely informational and only ever set by the AI,
+    // so an edit just carries the existing value forward unchanged.
+    const parts = [];
+    if (qty) parts.push(fieldMarker("qty", qty, true));
+    if (cond) parts.push(fieldMarker("cond", cond, true));
+    if (note) parts.push(fieldMarker("note", note, true));
+    if (existingConf) parts.push(`[[conf:${existingConf}]]`);
+    if (box) parts.push(boxMarker(box));
     if (brand) {
       // Strip brackets so the value can't break out of the [[brand:...]] marker.
-      description = `${description} [[brand:${brand.replace(/[[\]]/g, "")}]]`.trim();
+      parts.push(`[[brand:${brand.replace(/[[\]]/g, "")}]]`);
     }
+    const description = parts.join(" ");
 
     try {
       if (uid === "__new__") {
@@ -827,6 +998,8 @@ class FridgeCard extends HTMLElement {
       :host { display: block; }
       ha-card { padding: 16px; overflow: hidden; }
       .header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+      .header-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+      .refresh-btn ha-icon { --mdc-icon-size: 18px; }
       .title { font-size: 1.2rem; font-weight: 600; color: var(--primary-text-color); }
       .icon-btn { border: none; background: var(--secondary-background-color, rgba(0,0,0,0.06)); color: var(--primary-text-color); width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background .15s ease; flex-shrink: 0; }
       .icon-btn:hover { background: var(--divider-color, rgba(0,0,0,0.12)); }
@@ -864,6 +1037,10 @@ class FridgeCard extends HTMLElement {
       .item-main { min-width: 0; }
       .item-name { font-weight: 600; color: var(--primary-text-color); }
       .item-desc { font-size: 0.85rem; color: var(--secondary-text-color); margin-top: 2px; overflow-wrap: anywhere; }
+      .item-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+      .meta-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 0.7rem; font-weight: 600; color: var(--secondary-text-color); background: var(--secondary-background-color, rgba(0,0,0,0.06)); padding: 2px 7px; border-radius: 999px; }
+      .meta-chip ha-icon { --mdc-icon-size: 13px; }
+      .meta-chip.meta-conf { color: var(--primary-color); }
       .item-brand { display: inline-flex; align-items: center; gap: 3px; font-size: 0.75rem; font-weight: 600; color: var(--primary-color); margin-top: 4px; }
       .item-brand ha-icon { --mdc-icon-size: 14px; }
       .item-side { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
@@ -875,6 +1052,8 @@ class FridgeCard extends HTMLElement {
       .item-editing { flex-direction: column; align-items: stretch; gap: 8px; background: var(--secondary-background-color, rgba(0,0,0,0.04)); border-radius: 10px; padding: 12px; border-bottom: none; margin-bottom: 8px; }
       .item-editing input, .item-editing textarea { font-family: inherit; font-size: 0.9rem; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--divider-color, rgba(0,0,0,0.15)); background: var(--card-background-color, #fff); color: var(--primary-text-color); }
       .item-editing textarea { resize: vertical; min-height: 50px; }
+      .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .edit-conf { font-size: 0.75rem; color: var(--secondary-text-color); }
       .frame-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.8rem; color: var(--secondary-text-color); }
       .frame-actions { display: flex; gap: 4px; flex-shrink: 0; }
       .frame-actions .text-btn { padding: 4px 10px; }
