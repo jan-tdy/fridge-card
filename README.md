@@ -10,6 +10,9 @@ AI-recognized contents.
 - Lists the AI-recognized items as a plain list (no checkboxes) — name,
   description and expiration date, all editable directly on the card
 - Add / edit / delete items in place
+- A **brand** field per item, set by hand and never touched by the AI —
+  the [fridge-core](https://github.com/jan-tdy/fridge-core) automation
+  carries it forward across re-scans
 - Optional **detection frames**: toggle in the header to overlay each
   item's location and name (truncated with an ellipsis if it doesn't fit)
   on the photo (only shown once at least one item carries box data — see
@@ -32,11 +35,12 @@ your fridge-recognition automation writes items into, and the card will
 display and let you edit them — without the completed/checkbox semantics of
 a normal to-do list.
 
-If an item's `description` ends with a `[[box:x1,y1,x2,y2]]` marker
+If an item's `description` carries a trailing `[[box:x1,y1,x2,y2]]` marker
 (`x`/`y` as percentages 0-100 of the photo's width/height, top-left
 origin — this is what the [fridge-core](https://github.com/jan-tdy/fridge-core)
-automation now writes), the card hides that marker from the visible
-description and uses it to draw the item's detection frame instead.
+automation writes) and/or a `[[brand:...]]` marker, the card hides both
+from the visible description and uses them to draw the detection frame
+and the Brand field instead.
 
 ## Installation
 
@@ -91,8 +95,8 @@ defaults to `/local/fridge/fridge_latest.jpg`.
 
 ### Editing items
 
-Click the pencil icon on any item to edit its name, description and
-expiration date, or delete it. The badge shows a relative countdown
+Click the pencil icon on any item to edit its name, description, brand
+and expiration date, or delete it. The badge shows a relative countdown
 ("expires in 3d"); hover it for the exact date. When editing, the date
 field always uses `dd/mm/yyyy` (typing digits auto-inserts the `/`),
 regardless of the browser's locale — clear the field and hit Save to
@@ -104,8 +108,10 @@ description, due date).
 
 While editing, use **Draw on photo** to set (or **Redraw**/**Clear**) the
 item's detection frame by hand — drag a rectangle over it on the photo.
-This works correctly at any `image_rotation`, and overrides whatever box
-the AI provided until the next scan overwrites it again.
+This works correctly at any `image_rotation`. Both the hand-drawn frame
+and the Brand field are matched by item name and carried forward by the
+fridge-core automation on the next scan, instead of being overwritten by
+a fresh AI guess.
 
 ## Companion repository
 
