@@ -56,6 +56,31 @@ function formatDMY(date) {
   return `${d}/${m}/${date.getFullYear()}`;
 }
 
+// Parses a "dd/mm/yyyy" string into an ISO "yyyy-mm-dd" date, or null if
+// it isn't a valid complete date (used instead of <input type="date">,
+// whose displayed format follows the browser/OS locale rather than what
+// we ask for).
+function parseDMY(text) {
+  const m = String(text || "").trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!m) return null;
+  const day = Number(m[1]);
+  const month = Number(m[2]);
+  const year = Number(m[3]);
+  const d = new Date(year, month - 1, day);
+  if (d.getFullYear() !== year || d.getMonth() !== month - 1 || d.getDate() !== day) return null;
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${year}-${pad(month)}-${pad(day)}`;
+}
+
+// Auto-inserts the "/" separators as the user types digits.
+function maskDMYInput(raw) {
+  const digits = String(raw || "").replace(/\D/g, "").slice(0, 8);
+  let out = digits.slice(0, 2);
+  if (digits.length > 2) out += `/${digits.slice(2, 4)}`;
+  if (digits.length > 4) out += `/${digits.slice(4, 8)}`;
+  return out;
+}
+
 function dueInfo(due) {
   if (!due) return null;
   const dueDate = new Date(due.length === 10 ? `${due}T00:00:00` : due);
@@ -66,14 +91,14 @@ function dueInfo(due) {
   startOfToday.setHours(0, 0, 0, 0);
   const days = Math.round((startOfDue - startOfToday) / 86400000);
 
-  let title;
-  if (days < 0) title = `Expired ${Math.abs(days)}d ago`;
-  else if (days === 0) title = "Expires today";
-  else if (days === 1) title = "Expires tomorrow";
-  else title = `Expires in ${days}d`;
+  let label;
+  if (days < 0) label = `Expired ${Math.abs(days)}d ago`;
+  else if (days === 0) label = "Expires today";
+  else if (days === 1) label = "Expires tomorrow";
+  else label = `Expires in ${days}d`;
 
   const cls = days < 0 ? "due-overdue" : days <= 2 ? "due-soon" : "";
-  return { label: formatDMY(startOfDue), title, cls };
+  return { label, title: formatDMY(startOfDue), cls };
 }
 
 class FridgeCard extends HTMLElement {
@@ -206,6 +231,10 @@ class FridgeCard extends HTMLElement {
 
     this._statusRowEl.addEventListener("click", (e) => this._onStatusClick(e));
     this._itemsEl.addEventListener("click", (e) => this._onItemsClick(e));
+    this._itemsEl.addEventListener("input", (e) => {
+      if (!e.target.classList.contains("edit-due")) return;
+      e.target.value = maskDMYInput(e.target.value);
+    });
     root.querySelector(".add-btn").addEventListener("click", () => this._addItem());
 
     this._applyImageTransform();
@@ -343,7 +372,14 @@ class FridgeCard extends HTMLElement {
         <div class="item item-editing" data-uid="${escapeHtml(item.uid)}">
           <input class="edit-name" type="text" value="${escapeHtml(item.summary)}" placeholder="Item name" />
           <textarea class="edit-desc" placeholder="Description">${escapeHtml(item.description || "")}</textarea>
-          <input class="edit-due" type="date" value="${item.due ? item.due.slice(0, 10) : ""}" />
+          <input
+            class="edit-due"
+            type="text"
+            inputmode="numeric"
+            maxlength="10"
+            placeholder="dd/mm/yyyy"
+            value="${item.due ? escapeHtml(formatDMY(new Date(item.due.length === 10 ? `${item.due}T00:00:00` : item.due))) : ""}"
+          />
           <div class="edit-actions">
             <button class="text-btn danger" data-action="delete-item">Delete</button>
             <button class="text-btn" data-action="cancel-edit">Cancel</button>
@@ -405,7 +441,8 @@ class FridgeCard extends HTMLElement {
   async _saveItem(uid, itemEl) {
     const name = itemEl.querySelector(".edit-name").value.trim();
     const description = itemEl.querySelector(".edit-desc").value.trim();
-    const due = itemEl.querySelector(".edit-due").value;
+    const dueText = itemEl.querySelector(".edit-due").value.trim();
+    const due = dueText ? parseDMY(dueText) : null;
     if (!name) return;
 
     try {
