@@ -6,10 +6,14 @@ AI-recognized contents.
 ![type](https://img.shields.io/badge/type-lovelace--card-blue)
 
 - Shows the latest fridge photo, with a fixed rotation set in the card
-  config (0/90/180/270°) to correct a crooked camera mount
-- Lists the AI-recognized items as a plain list (no checkboxes) — name,
-  description and expiration date, all editable directly on the card
-- Add / edit / delete items in place
+  config (0/90/180/270°) to correct a crooked camera mount, and a refresh
+  button in the header to force-reload it on demand
+- Lists the AI-recognized items as a plain list (no checkboxes), each
+  field editable directly on the card: name, quantity, condition, an AI
+  confidence readout, a note, brand and expiration date
+- Add / edit / delete items in place. Editing quantity, condition, note
+  or brand protects that field from being overwritten by a fresh AI
+  guess on the next scan — the same idea as a hand-drawn detection frame
 - A **brand** field per item, set by hand and never touched by the AI —
   the [fridge-core](https://github.com/jan-tdy/fridge-core) automation
   carries it forward across re-scans. Autocompletes from every brand
@@ -19,8 +23,10 @@ AI-recognized contents.
   on the photo (only shown once at least one item carries box data — see
   below). Boxes can come from the AI (accuracy depends on the model) or
   be **drawn by hand**: while editing an item, hit "Draw on photo" and
-  drag a rectangle over it. Note: at `image_rotation` 90/270° the name
-  tag rotates together with the frame, so it reads sideways
+  drag a rectangle over it. Tapping a box on the photo — whether or not
+  the frames are currently toggled on — jumps straight to editing that
+  item. Note: at `image_rotation` 90/270° the name tag rotates together
+  with the frame, so it reads sideways
 - Quick controls: fridge light toggle, door status, open the live camera
   view, and a button to trigger the fridge-analysis automation
 - Fully configurable from the Lovelace UI editor — no YAML required
@@ -36,15 +42,22 @@ your fridge-recognition automation writes items into, and the card will
 display and let you edit them — without the completed/checkbox semantics of
 a normal to-do list.
 
-If an item's `description` carries a trailing `[[box:x1,y1,x2,y2]]` marker
-(`x`/`y` as percentages 0-100 of the photo's width/height, top-left
-origin — this is what the [fridge-core](https://github.com/jan-tdy/fridge-core)
-automation writes) and/or a `[[brand:...]]` marker, the card hides both
-from the visible description and uses them to draw the detection frame
-and the Brand field instead. A box drawn by hand on the card carries a
-trailing `,m` (e.g. `[[box:12,34,26,41,m]]`), which tells fridge-core to
-leave it alone on the next scan instead of replacing it with a fresh AI
-guess.
+The `description` field is where all of this actually lives: quantity,
+condition, confidence, note, brand and the detection box are each stored
+as their own `[[key:value]]` marker (e.g. `[[qty:2 pieces]]`,
+`[[box:x1,y1,x2,y2]]` — `x`/`y` as percentages 0-100 of the photo's
+width/height, top-left origin) and hidden from view, with the card
+showing/editing them as separate fields instead. A field you edit on the
+card — quantity, condition, note or a hand-drawn box — gets marked with
+a trailing `m` on its key (e.g. `[[qtym:2 pieces]]`,
+`[[box:12,34,26,41,m]]`), which tells the
+[fridge-core](https://github.com/jan-tdy/fridge-core) automation to leave
+it alone on the next scan instead of replacing it with a fresh AI guess.
+Brand works the same way but simpler: the AI never writes to it at all,
+so it's always exactly what you typed. Confidence is the one field the
+AI always refreshes, since only the AI ever sets it. An item created
+before these fields existed (plain free text, no markers at all) still
+shows that text as its note.
 
 ## Installation
 
@@ -99,26 +112,27 @@ defaults to `/local/fridge/fridge_latest.jpg`.
 
 ### Editing items
 
-Click the pencil icon on any item to edit its name, description, brand
-and expiration date, or delete it. The Brand field suggests every brand
-already used on some other item in the list (browser autocomplete), so a
-brand only needs to be typed once and can be picked from the list after
-that. The badge shows a relative countdown
-("expires in 3d"); hover it for the exact date. When editing, the date
-field always uses `dd/mm/yyyy` (typing digits auto-inserts the `/`),
-regardless of the browser's locale — clear the field and hit Save to
-remove the expiration date entirely. Use **Add item** to add a new one.
-Editing calls the standard `todo.add_item` /
-`todo.update_item` / `todo.remove_item` services, so your `todo_entity`
-must support the corresponding features (create/update/delete,
-description, due date).
+Click the pencil icon on any item — or tap its detection frame on the
+photo — to edit its name, quantity, condition, note, brand and
+expiration date, or delete it. The AI's confidence in its own guess, if
+any, is shown for reference but isn't editable. The Brand field suggests
+every brand already used on some other item in the list (browser
+autocomplete), so a brand only needs to be typed once and can be picked
+from the list after that. The badge shows a relative countdown ("expires
+in 3d"); hover it for the exact date. When editing, the date field always
+uses `dd/mm/yyyy` (typing digits auto-inserts the `/`), regardless of the
+browser's locale — clear the field and hit Save to remove the expiration
+date entirely. Use **Add item** to add a new one. Editing calls the
+standard `todo.add_item` / `todo.update_item` / `todo.remove_item`
+services, so your `todo_entity` must support the corresponding features
+(create/update/delete, description, due date).
 
 While editing, use **Draw on photo** to set (or **Redraw**/**Clear**) the
 item's detection frame by hand — drag a rectangle over it on the photo.
-This works correctly at any `image_rotation`. Both the hand-drawn frame
-and the Brand field are matched by item name and carried forward by the
-fridge-core automation on the next scan, instead of being overwritten by
-a fresh AI guess.
+This works correctly at any `image_rotation`. Quantity, condition, note,
+the hand-drawn frame and the Brand field are all matched by item name and
+carried forward by the fridge-core automation on the next scan, instead
+of being overwritten by a fresh (and possibly wrong) AI guess.
 
 ## Companion repository
 
