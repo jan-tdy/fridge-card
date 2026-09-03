@@ -12,7 +12,8 @@ AI-recognized contents.
 - Add / edit / delete items in place
 - A **brand** field per item, set by hand and never touched by the AI —
   the [fridge-core](https://github.com/jan-tdy/fridge-core) automation
-  carries it forward across re-scans
+  carries it forward across re-scans. Autocompletes from every brand
+  already used elsewhere in the list, so you only type each one out once
 - Optional **detection frames**: toggle in the header to overlay each
   item's location and name (truncated with an ellipsis if it doesn't fit)
   on the photo (only shown once at least one item carries box data — see
@@ -99,7 +100,10 @@ defaults to `/local/fridge/fridge_latest.jpg`.
 ### Editing items
 
 Click the pencil icon on any item to edit its name, description, brand
-and expiration date, or delete it. The badge shows a relative countdown
+and expiration date, or delete it. The Brand field suggests every brand
+already used on some other item in the list (browser autocomplete), so a
+brand only needs to be typed once and can be picked from the list after
+that. The badge shows a relative countdown
 ("expires in 3d"); hover it for the exact date. When editing, the date
 field always uses `dd/mm/yyyy` (typing digits auto-inserts the `/`),
 regardless of the browser's locale — clear the field and hit Save to

@@ -10,12 +10,13 @@
  * item's AI-estimated bounding box on the photo (toggle in the header) - the
  * box coordinates come from a companion fridge-core automation, or can be
  * drawn by hand on the photo while editing an item when the AI gets it
- * wrong or skips it.
+ * wrong or skips it. The Brand field offers previously used brand names as
+ * autocomplete suggestions, so a brand only needs to be typed out once.
  *
  * https://github.com/jan-tdy/fridge-card
  */
 
-const CARD_VERSION = "1.4.0";
+const CARD_VERSION = "1.5.0";
 
 function fireEvent(node, type, detail = {}, options = {}) {
   const event = new Event(type, {
@@ -279,6 +280,7 @@ class FridgeCard extends HTMLElement {
         </div>
         <div class="status-row"></div>
         <div class="items"></div>
+        <datalist id="brand-list"></datalist>
         <div class="add-row">
           <button class="add-btn">
             <ha-icon icon="mdi:plus"></ha-icon>
@@ -297,6 +299,7 @@ class FridgeCard extends HTMLElement {
     this._fallbackEl = root.querySelector(".fallback");
     this._statusRowEl = root.querySelector(".status-row");
     this._itemsEl = root.querySelector(".items");
+    this._brandListEl = root.querySelector("#brand-list");
 
     this._titleEl.textContent = this._config.title || "";
     this._titleEl.style.display = this._config.title ? "" : "none";
@@ -617,6 +620,7 @@ class FridgeCard extends HTMLElement {
   }
 
   _renderItems() {
+    this._renderBrandList();
     if (!this._items.length) {
       this._itemsEl.innerHTML = `<div class="empty">No items recognized yet.</div>`;
       this._renderBoxes();
@@ -630,6 +634,16 @@ class FridgeCard extends HTMLElement {
     });
     this._itemsEl.innerHTML = sorted.map((item) => this._itemRowHtml(item)).join("");
     this._renderBoxes();
+  }
+
+  // Offers every brand already used on some item as an autocomplete
+  // suggestion on the Brand field, so it only has to be typed out once.
+  _renderBrandList() {
+    if (!this._brandListEl) return;
+    const brands = [...new Set(this._items.map((i) => extractBrand(i.description)).filter(Boolean))].sort((a, b) =>
+      a.localeCompare(b)
+    );
+    this._brandListEl.innerHTML = brands.map((b) => `<option value="${escapeHtml(b)}"></option>`).join("");
   }
 
   _itemRowHtml(item) {
@@ -651,7 +665,7 @@ class FridgeCard extends HTMLElement {
         <div class="item item-editing" data-uid="${escapeHtml(item.uid)}">
           <input class="edit-name" type="text" value="${escapeHtml(nameVal)}" placeholder="Item name" />
           <textarea class="edit-desc" placeholder="Description">${escapeHtml(descVal)}</textarea>
-          <input class="edit-brand" type="text" value="${escapeHtml(brandVal)}" placeholder="Brand (set by hand, AI won't touch it)" />
+          <input class="edit-brand" type="text" list="brand-list" value="${escapeHtml(brandVal)}" placeholder="Brand (set by hand, AI won't touch it)" />
           <input
             class="edit-due"
             type="text"
