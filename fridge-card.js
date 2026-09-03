@@ -8,13 +8,14 @@
  * plus quick controls for the fridge light, door sensor, live camera view and
  * triggering a re-analysis of the fridge contents. Optionally overlays each
  * item's AI-estimated bounding box on the photo (toggle in the header) - the
- * box coordinates come from a companion fridge-core automation update and
- * their accuracy depends entirely on the AI model, hence "b0".
+ * box coordinates come from a companion fridge-core automation, or can be
+ * drawn by hand on the photo while editing an item when the AI gets it
+ * wrong or skips it.
  *
  * https://github.com/jan-tdy/fridge-card
  */
 
-const CARD_VERSION = "1.1.0";
+const CARD_VERSION = "1.2.0";
 
 function fireEvent(node, type, detail = {}, options = {}) {
   const event = new Event(type, {
@@ -148,6 +149,12 @@ class FridgeCard extends HTMLElement {
     this._itemsStateKey = null;
     this._editingUid = null;
     this._showBoxes = false;
+    // Manual box drawing (draw-on-photo) state.
+    this._drawingUid = null;
+    this._drawActive = false;
+    this._drawStart = null;
+    this._drawCurrent = null;
+    this._pendingBox = undefined; // undefined = untouched, object = drawn, null = explicitly cleared
   }
 
   setConfig(config) {
@@ -168,6 +175,9 @@ class FridgeCard extends HTMLElement {
     this._itemsStateKey = null;
     this._editingUid = null;
     this._showBoxes = this._loadShowBoxes();
+    this._drawingUid = null;
+    this._drawActive = false;
+    this._pendingBox = undefined;
     this._build();
     if (this._hass) this._refreshAll();
   }
@@ -292,6 +302,15 @@ class FridgeCard extends HTMLElement {
     });
     root.querySelector(".add-btn").addEventListener("click", () => this._addItem());
 
+    this._imageWrapEl.addEventListener("pointerdown", (e) => this._onDrawStart(e));
+    this._imageWrapEl.addEventListener("pointermove", (e) => this._onDrawMove(e));
+    // _build() can re-run (e.g. every keystroke in the config editor's live
+    // preview); only ever attach one window-level pointerup listener.
+    if (!this._pointerUpBound) {
+      this._pointerUpBound = true;
+      window.addEventListener("pointerup", (e) => this._onDrawEnd(e));
+    }
+
     this._applyImageTransform();
   }
 
@@ -331,8 +350,84 @@ class FridgeCard extends HTMLElement {
     this._headerEl.style.display = hasTitle || hasBoxes ? "" : "none";
   }
 
+  // Converts a pointer event's screen position into a percentage (0-100)
+  // in the photo's own coordinate space (top-left origin, same frame the
+  // AI's [[box:...]] percentages use) - inverting whatever rotation is
+  // currently applied to the image/overlay so drawing stays correct at
+  // 90/180/270°.
+  _pointerToBoxPercent(clientX, clientY) {
+    const rect = this._overlayEl.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const rot = Number(this._config.image_rotation) || 0;
+    const rad = (-rot * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const dx = clientX - cx;
+    const dy = clientY - cy;
+    const localDx = dx * cos - dy * sin;
+    const localDy = dx * sin + dy * cos;
+    const w = this._overlayEl.offsetWidth || 1;
+    const h = this._overlayEl.offsetHeight || 1;
+    const x = ((w / 2 + localDx) / w) * 100;
+    const y = ((h / 2 + localDy) / h) * 100;
+    return { x: Math.max(0, Math.min(100, x)), y: Math.max(0, Math.min(100, y)) };
+  }
+
+  _onDrawStart(e) {
+    if (!this._drawingUid) return;
+    e.preventDefault();
+    this._drawActive = true;
+    this._drawStart = this._pointerToBoxPercent(e.clientX, e.clientY);
+    this._drawCurrent = this._drawStart;
+    this._renderBoxes();
+  }
+
+  _onDrawMove(e) {
+    if (!this._drawingUid || !this._drawActive) return;
+    this._drawCurrent = this._pointerToBoxPercent(e.clientX, e.clientY);
+    this._renderBoxes();
+  }
+
+  _onDrawEnd(e) {
+    if (!this._drawingUid || !this._drawActive) return;
+    this._drawActive = false;
+    const end = this._pointerToBoxPercent(e.clientX, e.clientY);
+    const start = this._drawStart;
+    this._drawingUid = null;
+    this._drawStart = null;
+    this._drawCurrent = null;
+    this._imageWrapEl.classList.remove("drawing");
+
+    const round1 = (n) => Math.round(n * 10) / 10;
+    const box = {
+      x1: round1(Math.min(start.x, end.x)),
+      y1: round1(Math.min(start.y, end.y)),
+      x2: round1(Math.max(start.x, end.x)),
+      y2: round1(Math.max(start.y, end.y)),
+    };
+    // Ignore accidental taps/tiny drags.
+    if (box.x2 - box.x1 < 2 || box.y2 - box.y1 < 2) {
+      this._renderBoxes();
+      return;
+    }
+    this._pendingBox = box;
+    this._renderItems();
+  }
+
+  _boxDivHtml(box, pending) {
+    const left = Math.min(box.x1, box.x2);
+    const top = Math.min(box.y1, box.y2);
+    const width = Math.abs(box.x2 - box.x1);
+    const height = Math.abs(box.y2 - box.y1);
+    return `<div class="detection-box${pending ? " pending" : ""}" style="left:${left}%; top:${top}%; width:${width}%; height:${height}%;"></div>`;
+  }
+
   // Draws one rectangle per item that carries an AI-estimated box (see
-  // extractBox), or clears the overlay when detection frames are off.
+  // extractBox) when detection frames are toggled on, plus - always,
+  // regardless of the toggle - the box (pending draw, existing, or a
+  // live drag preview) of whichever item is currently being edited, so
+  // the user can see what they're placing.
   _renderBoxes() {
     if (!this._overlayEl) return;
     const withBoxes = this._items
@@ -342,19 +437,36 @@ class FridgeCard extends HTMLElement {
     this._boxesToggleEl.toggleAttribute("hidden", withBoxes.length === 0);
     this._updateHeaderVisibility();
 
-    if (!this._showBoxes || withBoxes.length === 0) {
-      this._overlayEl.innerHTML = "";
-      return;
+    const parts = [];
+    if (this._showBoxes) {
+      for (const { item, box } of withBoxes) {
+        if (item.uid === this._editingUid) continue; // handled below instead
+        parts.push(this._boxDivHtml(box, false));
+      }
     }
-    this._overlayEl.innerHTML = withBoxes
-      .map(({ box }) => {
-        const left = Math.min(box.x1, box.x2);
-        const top = Math.min(box.y1, box.y2);
-        const width = Math.abs(box.x2 - box.x1);
-        const height = Math.abs(box.y2 - box.y1);
-        return `<div class="detection-box" style="left:${left}%; top:${top}%; width:${width}%; height:${height}%;"></div>`;
-      })
-      .join("");
+
+    if (this._editingUid && this._drawingUid !== this._editingUid) {
+      const editingItem = this._items.find((i) => i.uid === this._editingUid);
+      const box =
+        this._pendingBox !== undefined ? this._pendingBox : editingItem ? extractBox(editingItem.description) : null;
+      if (box) parts.push(this._boxDivHtml(box, true));
+    }
+
+    if (this._drawActive && this._drawStart && this._drawCurrent) {
+      parts.push(
+        this._boxDivHtml(
+          {
+            x1: Math.min(this._drawStart.x, this._drawCurrent.x),
+            y1: Math.min(this._drawStart.y, this._drawCurrent.y),
+            x2: Math.max(this._drawStart.x, this._drawCurrent.x),
+            y2: Math.max(this._drawStart.y, this._drawCurrent.y),
+          },
+          true
+        )
+      );
+    }
+
+    this._overlayEl.innerHTML = parts.join("");
   }
 
   _updateImage() {
@@ -472,6 +584,7 @@ class FridgeCard extends HTMLElement {
 
   _itemRowHtml(item) {
     if (this._editingUid === item.uid) {
+      const hasBox = this._pendingBox !== undefined ? Boolean(this._pendingBox) : Boolean(extractBox(item.description));
       return `
         <div class="item item-editing" data-uid="${escapeHtml(item.uid)}">
           <input class="edit-name" type="text" value="${escapeHtml(item.summary)}" placeholder="Item name" />
@@ -484,6 +597,13 @@ class FridgeCard extends HTMLElement {
             placeholder="dd/mm/yyyy"
             value="${item.due ? escapeHtml(formatDMY(new Date(item.due.length === 10 ? `${item.due}T00:00:00` : item.due))) : ""}"
           />
+          <div class="frame-row">
+            <span>Detection frame${hasBox ? " set" : " not set"}</span>
+            <div class="frame-actions">
+              <button type="button" class="text-btn" data-action="draw-box">${hasBox ? "Redraw" : "Draw on photo"}</button>
+              ${hasBox ? `<button type="button" class="text-btn danger" data-action="clear-box">Clear</button>` : ""}
+            </div>
+          </div>
           <div class="edit-actions">
             <button class="text-btn danger" data-action="delete-item">Delete</button>
             <button class="text-btn" data-action="cancel-edit">Cancel</button>
@@ -520,21 +640,33 @@ class FridgeCard extends HTMLElement {
 
     if (action === "edit-item") {
       this._editingUid = uid;
+      this._pendingBox = undefined;
       this._renderItems();
     } else if (action === "cancel-edit") {
       this._editingUid = null;
+      this._pendingBox = undefined;
+      this._drawingUid = null;
+      this._imageWrapEl.classList.remove("drawing");
       if (uid === "__new__") this._items = this._items.filter((i) => i.uid !== "__new__");
       this._renderItems();
     } else if (action === "delete-item") {
       this._deleteItem(uid);
     } else if (action === "save-item") {
       this._saveItem(uid, itemEl);
+    } else if (action === "draw-box") {
+      this._drawingUid = uid;
+      this._imageWrapEl.classList.add("drawing");
+      this._renderBoxes();
+    } else if (action === "clear-box") {
+      this._pendingBox = null;
+      this._renderItems();
     }
   }
 
   _addItem() {
     if (this._items.some((i) => i.uid === "__new__")) return;
     this._editingUid = "__new__";
+    this._pendingBox = undefined;
     this._items = [{ uid: "__new__", summary: "", description: "", due: null }, ...this._items];
     this._renderItems();
     requestAnimationFrame(() => {
@@ -550,13 +682,14 @@ class FridgeCard extends HTMLElement {
     const due = dueText ? parseDMY(dueText) : null;
     if (!name) return;
 
-    // Editing the description strips the AI's [[box:...]] marker for
-    // display; carry it forward so a manual edit doesn't drop the
-    // detection frame until the next scan overwrites it anyway.
+    // A manually drawn/cleared frame wins; otherwise carry the item's
+    // existing [[box:...]] marker forward (editing the description strips
+    // it for display, so it would otherwise be lost until the next scan).
     const existing = this._items.find((i) => i.uid === uid);
     const existingBox = existing ? extractBox(existing.description) : null;
-    if (existingBox) {
-      description = `${description} [[box:${existingBox.x1},${existingBox.y1},${existingBox.x2},${existingBox.y2}]]`.trim();
+    const box = this._pendingBox !== undefined ? this._pendingBox : existingBox;
+    if (box) {
+      description = `${description} [[box:${box.x1},${box.y1},${box.x2},${box.y2}]]`.trim();
     }
 
     try {
@@ -572,16 +705,22 @@ class FridgeCard extends HTMLElement {
           rename: name,
           description,
         };
-        if (due) payload.due_date = due;
+        // An empty field explicitly clears the due date (due_date: null);
+        // non-empty-but-unparseable text is left alone rather than risking
+        // wiping the date over a typo.
+        if (dueText === "") payload.due_date = null;
+        else if (due) payload.due_date = due;
         await this._hass.callService("todo", "update_item", payload);
       }
     } finally {
       this._editingUid = null;
+      this._pendingBox = undefined;
       await this._fetchItems();
     }
   }
 
   async _deleteItem(uid) {
+    this._pendingBox = undefined;
     if (uid === "__new__") {
       this._editingUid = null;
       this._items = this._items.filter((i) => i.uid !== "__new__");
@@ -606,9 +745,12 @@ class FridgeCard extends HTMLElement {
       .boxes-toggle:hover { background: var(--divider-color, rgba(0,0,0,0.12)); }
       .boxes-toggle.active { background: var(--error-color, #f44336); color: var(--text-primary-color, #fff); }
       .image-wrap { position: relative; border-radius: 12px; overflow: hidden; background: var(--secondary-background-color, #eee); margin-bottom: 14px; }
+      .image-wrap.drawing { cursor: crosshair; user-select: none; touch-action: none; }
+      .image-wrap.drawing::after { content: 'Drag on the photo to mark the item'; position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); background: rgba(0,0,0,0.65); color: #fff; font-size: 0.7rem; padding: 4px 10px; border-radius: 999px; pointer-events: none; white-space: nowrap; z-index: 2; }
       .fridge-img { position: absolute; top: 50%; left: 50%; transition: transform .25s ease, width .25s ease, height .25s ease; }
       .detection-overlay { position: absolute; top: 50%; left: 50%; pointer-events: none; transition: transform .25s ease, width .25s ease, height .25s ease; }
       .detection-box { position: absolute; border: 2px solid #ff3b3b; border-radius: 3px; box-shadow: 0 0 0 1px rgba(0,0,0,0.35); }
+      .detection-box.pending { border-color: #2196f3; border-style: dashed; background: rgba(33,150,243,0.1); }
       .fallback { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 6px; color: var(--secondary-text-color); font-size: 0.85rem; }
       .fallback.show { display: flex; }
       .fallback ha-icon { --mdc-icon-size: 32px; }
@@ -639,6 +781,9 @@ class FridgeCard extends HTMLElement {
       .item-editing { flex-direction: column; align-items: stretch; gap: 8px; background: var(--secondary-background-color, rgba(0,0,0,0.04)); border-radius: 10px; padding: 12px; border-bottom: none; margin-bottom: 8px; }
       .item-editing input, .item-editing textarea { font-family: inherit; font-size: 0.9rem; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--divider-color, rgba(0,0,0,0.15)); background: var(--card-background-color, #fff); color: var(--primary-text-color); }
       .item-editing textarea { resize: vertical; min-height: 50px; }
+      .frame-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.8rem; color: var(--secondary-text-color); }
+      .frame-actions { display: flex; gap: 4px; flex-shrink: 0; }
+      .frame-actions .text-btn { padding: 4px 10px; }
       .edit-actions { display: flex; justify-content: flex-end; gap: 8px; }
       .text-btn { border: none; background: none; padding: 6px 12px; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer; color: var(--primary-text-color); font-family: inherit; }
       .text-btn:hover { background: var(--divider-color, rgba(0,0,0,0.1)); }
