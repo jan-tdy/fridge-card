@@ -10,6 +10,10 @@ AI-recognized contents.
 - Lists the AI-recognized items as a plain list (no checkboxes) — name,
   description and expiration date, all editable directly on the card
 - Add / edit / delete items in place
+- Optional **detection frames**: toggle in the header to overlay each
+  item's AI-estimated location on the photo (only shown once at least one
+  item carries box data — see below; accuracy depends on the AI model,
+  hence this being a `b0` release)
 - Quick controls: fridge light toggle, door status, open the live camera
   view, and a button to trigger the fridge-analysis automation
 - Fully configurable from the Lovelace UI editor — no YAML required
@@ -24,6 +28,12 @@ the built-in to-do list card uses). Point `todo_entity` at whatever entity
 your fridge-recognition automation writes items into, and the card will
 display and let you edit them — without the completed/checkbox semantics of
 a normal to-do list.
+
+If an item's `description` ends with a `[[box:x1,y1,x2,y2]]` marker
+(`x`/`y` as percentages 0-100 of the photo's width/height, top-left
+origin — this is what the [fridge-core](https://github.com/jan-tdy/fridge-core)
+automation now writes), the card hides that marker from the visible
+description and uses it to draw the item's detection frame instead.
 
 ## Installation
 
