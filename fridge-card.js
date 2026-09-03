@@ -802,6 +802,12 @@ class FridgeCard extends HTMLElement {
       // the manifest it just appended to.
       await new Promise((resolve) => setTimeout(resolve, 700));
       await this._fetchHistory();
+    } catch (err) {
+      // Surface this instead of failing silently - a wrong/missing
+      // snapshot_service (e.g. the shell_command hasn't been added to
+      // configuration.yaml, or HA hasn't been restarted since it was) is
+      // the most common cause, and the error message usually says so.
+      alert(`Could not save snapshot: ${(err && err.message) || err}`);
     } finally {
       this._saveBtnEl.disabled = false;
     }
