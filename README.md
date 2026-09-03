@@ -77,9 +77,11 @@ defaults to `/local/fridge/fridge_latest.jpg`.
 ### Editing items
 
 Click the pencil icon on any item to edit its name, description and
-expiration date, or delete it. Expiration dates are shown as `dd/mm/yyyy`
-(hover the badge for a relative "expires in Xd" tooltip). Use **Add item**
-to add a new one. Editing calls the standard `todo.add_item` /
+expiration date, or delete it. The badge shows a relative countdown
+("expires in 3d"); hover it for the exact date. When editing, the date
+field always uses `dd/mm/yyyy` (typing digits auto-inserts the `/`),
+regardless of the browser's locale. Use **Add item** to add a new one.
+Editing calls the standard `todo.add_item` /
 `todo.update_item` / `todo.remove_item` services, so your `todo_entity`
 must support the corresponding features (create/update/delete,
 description, due date).
