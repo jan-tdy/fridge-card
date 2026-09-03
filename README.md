@@ -11,10 +11,12 @@ AI-recognized contents.
   description and expiration date, all editable directly on the card
 - Add / edit / delete items in place
 - Optional **detection frames**: toggle in the header to overlay each
-  item's location on the photo (only shown once at least one item carries
-  box data — see below). Boxes can come from the AI (accuracy depends on
-  the model) or be **drawn by hand**: while editing an item, hit "Draw on
-  photo" and drag a rectangle over it
+  item's location and name (truncated with an ellipsis if it doesn't fit)
+  on the photo (only shown once at least one item carries box data — see
+  below). Boxes can come from the AI (accuracy depends on the model) or
+  be **drawn by hand**: while editing an item, hit "Draw on photo" and
+  drag a rectangle over it. Note: at `image_rotation` 90/270° the name
+  tag rotates together with the frame, so it reads sideways
 - Quick controls: fridge light toggle, door status, open the live camera
   view, and a button to trigger the fridge-analysis automation
 - Fully configurable from the Lovelace UI editor — no YAML required
