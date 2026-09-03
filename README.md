@@ -14,6 +14,15 @@ AI-recognized contents.
 - Add / edit / delete items in place. Editing quantity, condition, note
   or brand protects that field from being overwritten by a fresh AI
   guess on the next scan — the same idea as a hand-drawn detection frame
+- A checkbox on each item marks it **eaten** instead of deleting it
+  outright — it moves into a collapsed **Eaten** section at the bottom,
+  restorable from there. Adding a new item under a name that's already
+  in that section offers to restore it instead of creating a duplicate,
+  and so does the fridge-core automation if it still recognizes the item
+  on a later scan
+- The layout responds to the card's own width, not the browser window —
+  side-by-side (photo left, items right) on a wider card, and the item
+  list itself splitting into two columns once there's room for it
 - A **brand** field per item, set by hand and never touched by the AI —
   the [fridge-core](https://github.com/jan-tdy/fridge-core) automation
   carries it forward across re-scans. Autocompletes from every brand
@@ -133,6 +142,14 @@ This works correctly at any `image_rotation`. Quantity, condition, note,
 the hand-drawn frame and the Brand field are all matched by item name and
 carried forward by the fridge-core automation on the next scan, instead
 of being overwritten by a fresh (and possibly wrong) AI guess.
+
+The checkbox on each item calls `todo.update_item` with `status:
+completed` instead of removing it, so it shows up in the collapsed
+**Eaten (N)** section at the bottom of the list instead of disappearing
+for good — expand it and hit **Restore** to bring an item back. If you
+add a new item under a name that's already sitting there, the card asks
+whether to restore it instead of creating a duplicate; fridge-core does
+the same automatically if a later scan still recognizes the item.
 
 ## Companion repository
 
