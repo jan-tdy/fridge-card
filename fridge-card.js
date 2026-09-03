@@ -85,17 +85,24 @@ function maskDMYInput(raw) {
   return out;
 }
 
-// fridge-core embeds each item's AI-estimated location in the photo as a
+// fridge-core embeds each item's estimated location in the photo as a
 // trailing "[[box:x1,y1,x2,y2]]" marker in the todo item's description
 // (x/y are percentages 0-100 of the photo's width/height, top-left origin).
-const BOX_MARKER_RE = /\s*\[\[box:\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\]\]\s*/;
+// A trailing ",m" (e.g. "[[box:12,34,26,41,m]]") marks a box drawn by hand
+// on this card, which tells fridge-core to keep it as-is on the next scan
+// instead of replacing it with a fresh AI guess.
+const BOX_MARKER_RE = /\s*\[\[box:\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*(m))?\s*\]\]\s*/;
 
 function extractBox(description) {
   const m = BOX_MARKER_RE.exec(String(description || ""));
   if (!m) return null;
-  const [x1, y1, x2, y2] = m.slice(1).map(Number);
+  const [x1, y1, x2, y2] = m.slice(1, 5).map(Number);
   if ([x1, y1, x2, y2].some((n) => Number.isNaN(n))) return null;
-  return { x1, y1, x2, y2 };
+  return { x1, y1, x2, y2, manual: m[5] === "m" };
+}
+
+function boxMarker(box) {
+  return `[[box:${box.x1},${box.y1},${box.x2},${box.y2}${box.manual ? ",m" : ""}]]`;
 }
 
 function stripBoxMarker(description) {
@@ -428,6 +435,7 @@ class FridgeCard extends HTMLElement {
       y1: round1(Math.min(start.y, end.y)),
       x2: round1(Math.max(start.x, end.x)),
       y2: round1(Math.max(start.y, end.y)),
+      manual: true,
     };
     // Ignore accidental taps/tiny drags.
     if (box.x2 - box.x1 < 2 || box.y2 - box.y1 < 2) {
@@ -751,7 +759,7 @@ class FridgeCard extends HTMLElement {
     const existingBox = existing ? extractBox(existing.description) : null;
     const box = this._pendingBox !== undefined ? this._pendingBox : existingBox;
     if (box) {
-      description = `${description} [[box:${box.x1},${box.y1},${box.x2},${box.y2}]]`.trim();
+      description = `${description} ${boxMarker(box)}`.trim();
     }
     if (brand) {
       // Strip brackets so the value can't break out of the [[brand:...]] marker.

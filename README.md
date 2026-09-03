@@ -40,7 +40,10 @@ If an item's `description` carries a trailing `[[box:x1,y1,x2,y2]]` marker
 origin — this is what the [fridge-core](https://github.com/jan-tdy/fridge-core)
 automation writes) and/or a `[[brand:...]]` marker, the card hides both
 from the visible description and uses them to draw the detection frame
-and the Brand field instead.
+and the Brand field instead. A box drawn by hand on the card carries a
+trailing `,m` (e.g. `[[box:12,34,26,41,m]]`), which tells fridge-core to
+leave it alone on the next scan instead of replacing it with a fresh AI
+guess.
 
 ## Installation
 
