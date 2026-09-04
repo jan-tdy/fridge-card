@@ -29,12 +29,15 @@
  * opening the edit form, greyed out once it reaches 1. When a
  * snapshot_service is configured (see the fridge-core README), a Save
  * button copies the current photo to a timestamped file and ◀ ▶/Latest
- * controls browse back through previously saved ones.
+ * controls browse back through previously saved ones. An item can also be
+ * marked "in side door" by hand for something the camera can't see (e.g. a
+ * fridge's side compartment) - it shows as a badge next to quantity/condition
+ * instead of a detection frame, and drops any existing box.
  *
  * https://github.com/jan-tdy/fridge-card
  */
 
-const CARD_VERSION = "1.8.0";
+const CARD_VERSION = "1.9.0";
 
 function fireEvent(node, type, detail = {}, options = {}) {
   const event = new Event(type, {
@@ -142,6 +145,20 @@ function stripBrandMarker(description) {
   return String(description || "").replace(BRAND_MARKER_RE, " ").trim();
 }
 
+// Marks an item that's known to sit somewhere the camera can't see (e.g. a
+// fridge's side door) - set entirely by hand, like the brand. Such an item
+// never gets a meaningful AI-estimated box, so this shows as a badge next to
+// quantity/condition instead of a detection frame on the photo.
+const SIDE_DOOR_RE = /\s*\[\[sidedoor:1\]\]\s*/;
+
+function extractSideDoor(description) {
+  return SIDE_DOOR_RE.test(String(description || ""));
+}
+
+function stripSideDoorMarker(description) {
+  return String(description || "").replace(SIDE_DOOR_RE, " ").trim();
+}
+
 // Quantity, condition ("openness") and note are split into their own fields
 // instead of one free-text description. Each has an AI marker (refreshed on
 // every scan) and a "manual" marker - a trailing "m" on the key, e.g.
@@ -192,7 +209,7 @@ function stripAllFieldMarkers(description) {
 }
 
 function stripMarkers(description) {
-  return stripAllFieldMarkers(stripBrandMarker(stripBoxMarker(description)));
+  return stripAllFieldMarkers(stripSideDoorMarker(stripBrandMarker(stripBoxMarker(description))));
 }
 
 // Legacy items (created before quantity/condition/note existed as separate
@@ -662,6 +679,7 @@ class FridgeCard extends HTMLElement {
       note: itemEl.querySelector(".edit-note").value,
       brand: itemEl.querySelector(".edit-brand").value,
       due: itemEl.querySelector(".edit-due").value,
+      sideDoor: itemEl.querySelector(".edit-sidedoor").checked,
     };
   }
 
@@ -1009,6 +1027,7 @@ class FridgeCard extends HTMLElement {
       const condVal = draft ? draft.cond : fieldValue(extractCond, item.description);
       const noteVal = draft ? draft.note : fieldValue(extractNote, item.description);
       const brandVal = draft ? draft.brand : extractBrand(item.description);
+      const sideDoorVal = draft ? draft.sideDoor : extractSideDoor(item.description);
       const confVal = extractConf(item.description);
       const dueVal = draft
         ? draft.due
@@ -1025,6 +1044,10 @@ class FridgeCard extends HTMLElement {
           ${confVal ? `<div class="edit-conf">AI confidence: ${escapeHtml(confVal)}%</div>` : ""}
           <textarea class="edit-note" placeholder="Note">${escapeHtml(noteVal)}</textarea>
           <input class="edit-brand" type="text" list="brand-list" value="${escapeHtml(brandVal)}" placeholder="Brand (set by hand, AI won't touch it)" />
+          <label class="sidedoor-row">
+            <input class="edit-sidedoor" type="checkbox" ${sideDoorVal ? "checked" : ""} />
+            In side door (camera can't see it)
+          </label>
           <input
             class="edit-due"
             type="text"
@@ -1055,6 +1078,7 @@ class FridgeCard extends HTMLElement {
     const note = fieldValue(extractNote, item.description);
     const conf = extractConf(item.description);
     const brand = extractBrand(item.description);
+    const sideDoor = extractSideDoor(item.description);
     const qtyNumMatch = qty.match(/^(\d+)/);
     const qtyNum = qtyNumMatch ? Number(qtyNumMatch[1]) : null;
     return `
@@ -1065,7 +1089,7 @@ class FridgeCard extends HTMLElement {
         <div class="item-main">
           <div class="item-name">${escapeHtml(item.summary)}</div>
           ${
-            qty || cond || conf
+            qty || cond || conf || sideDoor
               ? `<div class="item-meta">
                   ${
                     qty
@@ -1080,6 +1104,7 @@ class FridgeCard extends HTMLElement {
                   }
                   ${cond ? `<span class="meta-chip"><ha-icon icon="mdi:package-variant-closed"></ha-icon>${escapeHtml(cond)}</span>` : ""}
                   ${conf ? `<span class="meta-chip meta-conf">${escapeHtml(conf)}%</span>` : ""}
+                  ${sideDoor ? `<span class="meta-chip" title="Not visible to the camera - no detection frame"><ha-icon icon="mdi:door"></ha-icon>Side door</span>` : ""}
                 </div>`
               : ""
           }
@@ -1154,6 +1179,7 @@ class FridgeCard extends HTMLElement {
     const cond = itemEl.querySelector(".edit-cond").value.trim();
     const note = itemEl.querySelector(".edit-note").value.trim();
     const brand = itemEl.querySelector(".edit-brand").value.trim();
+    const sideDoor = itemEl.querySelector(".edit-sidedoor").checked;
     const dueText = itemEl.querySelector(".edit-due").value.trim();
     const due = dueText ? parseDMY(dueText) : null;
     if (!name) return;
@@ -1161,10 +1187,12 @@ class FridgeCard extends HTMLElement {
     // A manually drawn/cleared frame wins; otherwise carry the item's
     // existing [[box:...]] marker forward (editing the description strips
     // it for display, so it would otherwise be lost until the next scan).
+    // An item in the side door has no meaningful box - the camera can't see
+    // it there - so marking it drops any frame instead of keeping a stale one.
     const existing = this._items.find((i) => i.uid === uid);
     const existingBox = existing ? extractBox(existing.description) : null;
     const existingConf = existing ? extractConf(existing.description) : "";
-    const box = this._pendingBox !== undefined ? this._pendingBox : existingBox;
+    const box = sideDoor ? null : this._pendingBox !== undefined ? this._pendingBox : existingBox;
 
     // Quantity/condition/note are always written back through the "manual"
     // marker when saved from the card - same idea as a hand-drawn detection
@@ -1182,6 +1210,7 @@ class FridgeCard extends HTMLElement {
       // Strip brackets so the value can't break out of the [[brand:...]] marker.
       parts.push(`[[brand:${brand.replace(/[[\]]/g, "")}]]`);
     }
+    if (sideDoor) parts.push("[[sidedoor:1]]");
     const description = parts.join(" ");
 
     try {
@@ -1273,6 +1302,7 @@ class FridgeCard extends HTMLElement {
     const conf = extractConf(item.description);
     const brand = extractBrand(item.description);
     const box = extractBox(item.description);
+    const sideDoor = extractSideDoor(item.description);
 
     const parts = [fieldMarker("qty", newQty, true)];
     if (cond) parts.push(fieldMarker("cond", cond.value, cond.manual));
@@ -1280,6 +1310,7 @@ class FridgeCard extends HTMLElement {
     if (conf) parts.push(`[[conf:${conf}]]`);
     if (box) parts.push(boxMarker(box));
     if (brand) parts.push(`[[brand:${brand.replace(/[[\]]/g, "")}]]`);
+    if (sideDoor) parts.push("[[sidedoor:1]]");
 
     await this._hass.callService("todo", "update_item", {
       entity_id: this._config.todo_entity,
@@ -1383,6 +1414,8 @@ class FridgeCard extends HTMLElement {
       .item-editing textarea { resize: vertical; min-height: 50px; }
       .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
       .edit-conf { font-size: 0.75rem; color: var(--secondary-text-color); }
+      .sidedoor-row { display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--secondary-text-color); }
+      .sidedoor-row input { width: auto; padding: 0; }
       .frame-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.8rem; color: var(--secondary-text-color); }
       .frame-actions { display: flex; gap: 4px; flex-shrink: 0; }
       .frame-actions .text-btn { padding: 4px 10px; }
