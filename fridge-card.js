@@ -8,36 +8,41 @@
  * expiration date, each its own field and editable in place, no checkboxes -
  * plus quick controls for the fridge light, door sensor, live camera view and
  * triggering a re-analysis of the fridge contents. Optionally overlays each
- * item's AI-estimated bounding box on the photo (toggle in the header) - the
- * box coordinates come from a companion fridge-core automation, or can be
- * drawn by hand on the photo while editing an item when the AI gets it
- * wrong or skips it - tapping a box on the photo (whether or not frames are
- * currently toggled on) jumps straight to editing that item. Editing
- * quantity, condition, note or brand (or drawing a box by hand) protects
- * that field from being overwritten by a fresh AI guess on the next scan;
- * the Brand field also offers previously used brand names as autocomplete
- * suggestions, so a brand only needs to be typed once. A refresh button in
- * the header force-reloads the photo on demand, bypassing both the browser
- * cache and the usual entity-timestamp cache-busting. A checkbox on each
- * item marks it eaten instead of deleting it outright, tucking it into a
- * collapsed "Eaten" section it can be restored from; adding a new item
- * under a name that's sitting there offers to restore it instead of
- * creating a duplicate. The layout responds to the card's own width (not
- * the browser window) - side-by-side on a wider card, and the item list
- * itself splitting into two columns once there's room for it. A numeric
- * quantity gets a one-tap down arrow to knock it down by one without
- * opening the edit form, greyed out once it reaches 1. When a
- * snapshot_service is configured (see the fridge-core README), a Save
- * button copies the current photo to a timestamped file and ◀ ▶/Latest
- * controls browse back through previously saved ones. An item can also be
- * marked "in side door" by hand for something the camera can't see (e.g. a
- * fridge's side compartment) - it shows as a badge next to quantity/condition
- * instead of a detection frame, and drops any existing box.
+ * item's AI-estimated bounding box(es) on the photo (toggle in the header) -
+ * an item can carry more than one box, each with its own optional expiration
+ * date, for the same item sitting in a few different spots. Box coordinates
+ * come from a companion fridge-core automation, or can be drawn by hand on
+ * the photo while editing an item when the AI gets it wrong or skips it -
+ * tapping a box on the photo (whether or not frames are currently toggled
+ * on) jumps straight to editing that item. Editing quantity, condition,
+ * note or brand (or drawing a box by hand) protects that field from being
+ * overwritten by a fresh AI guess on the next scan; the Brand field also
+ * offers previously used brand names as autocomplete suggestions, so a
+ * brand only needs to be typed once. A refresh button in the header
+ * force-reloads the photo on demand, bypassing both the browser cache and
+ * the usual entity-timestamp cache-busting. A checkbox on each item marks
+ * it eaten instead of deleting it outright, tucking it into a collapsed
+ * "Eaten" section it can be restored from; adding a new item under a name
+ * that's sitting there offers to restore it instead of creating a
+ * duplicate. The layout responds to the card's own width (not the browser
+ * window) - side-by-side on a wider card, and the item list itself
+ * splitting into two columns once there's room for it. A numeric quantity
+ * gets a one-tap down arrow to knock it down by one without opening the
+ * edit form, greyed out once it reaches 1. When a snapshot_service is
+ * configured (see the fridge-core README), a Save button copies the
+ * current photo to a timestamped file and ◀ ▶/Latest controls browse back
+ * through previously saved ones. An item can also be marked "in side door"
+ * or "in freezer" by hand for something the camera can't see (e.g. a
+ * fridge's side compartment or the freezer drawer) - it shows as a badge
+ * next to quantity/condition instead of a detection frame, and drops any
+ * existing box(es). A "Simple list" toggle in the header swaps the item
+ * list for a compact name/quantity/place/brand/expiration line per item
+ * with no badges - the pencil icon still opens the full edit form.
  *
  * https://github.com/jan-tdy/fridge-card
  */
 
-const CARD_VERSION = "1.9.0";
+const CARD_VERSION = "1.10.0";
 
 function fireEvent(node, type, detail = {}, options = {}) {
   const event = new Event(type, {
@@ -98,6 +103,19 @@ function parseDMY(text) {
   return `${year}-${pad(month)}-${pad(day)}`;
 }
 
+// True for a real calendar date in "yyyy-mm-dd" form - rejects e.g.
+// "2026-02-30", which the Date constructor would otherwise silently roll
+// over to March 2nd instead of erroring.
+function isValidISODate(text) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(text || ""));
+  if (!m) return false;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const d = new Date(year, month - 1, day);
+  return d.getFullYear() === year && d.getMonth() === month - 1 && d.getDate() === day;
+}
+
 // Auto-inserts the "/" separators as the user types digits.
 function maskDMYInput(raw) {
   const digits = String(raw || "").replace(/\D/g, "").slice(0, 8);
@@ -112,23 +130,46 @@ function maskDMYInput(raw) {
 // (x/y are percentages 0-100 of the photo's width/height, top-left origin).
 // A trailing ",m" (e.g. "[[box:12,34,26,41,m]]") marks a box drawn by hand
 // on this card, which tells fridge-core to keep it as-is on the next scan
-// instead of replacing it with a fresh AI guess.
-const BOX_MARKER_RE = /\s*\[\[box:\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*(m))?\s*\]\]\s*/;
+// instead of replacing it with a fresh AI guess. An optional further
+// ",yyyy-mm-dd" (e.g. "[[box:12,34,26,41,m,2026-09-12]]", or
+// "[[box:12,34,26,41,,2026-09-12]]" for a non-manual box) is that specific
+// box's own expiration date - useful when the same item has several
+// instances (different spots in the photo) that don't all expire together.
+// An item can carry more than one box - e.g. a few of the same item sitting
+// in different spots in the photo - so descriptions can hold several
+// "[[box:...]]" markers. A fresh RegExp is built per call (rather than
+// reusing one "g"-flagged instance) so stateful lastIndex never leaks
+// between calls.
+const BOX_MARKER_SRC =
+  "\\[\\[box:\\s*([\\d.]+)\\s*,\\s*([\\d.]+)\\s*,\\s*([\\d.]+)\\s*,\\s*([\\d.]+)\\s*(?:,\\s*(m)?\\s*(?:,\\s*(\\d{4}-\\d{2}-\\d{2}))?)?\\s*\\]\\]";
 
-function extractBox(description) {
-  const m = BOX_MARKER_RE.exec(String(description || ""));
-  if (!m) return null;
-  const [x1, y1, x2, y2] = m.slice(1, 5).map(Number);
-  if ([x1, y1, x2, y2].some((n) => Number.isNaN(n))) return null;
-  return { x1, y1, x2, y2, manual: m[5] === "m" };
+function extractBoxes(description) {
+  const re = new RegExp(BOX_MARKER_SRC, "g");
+  const text = String(description || "");
+  const boxes = [];
+  let m;
+  while ((m = re.exec(text))) {
+    const [x1, y1, x2, y2] = m.slice(1, 5).map(Number);
+    if ([x1, y1, x2, y2].some((n) => Number.isNaN(n))) continue;
+    boxes.push({ x1, y1, x2, y2, manual: m[5] === "m", due: m[6] && isValidISODate(m[6]) ? m[6] : null });
+  }
+  return boxes;
 }
 
 function boxMarker(box) {
-  return `[[box:${box.x1},${box.y1},${box.x2},${box.y2}${box.manual ? ",m" : ""}]]`;
+  let suffix = "";
+  if (box.manual || box.due) {
+    suffix = `,${box.manual ? "m" : ""}`;
+    if (box.due) suffix += `,${box.due}`;
+  }
+  return `[[box:${box.x1},${box.y1},${box.x2},${box.y2}${suffix}]]`;
 }
 
 function stripBoxMarker(description) {
-  return String(description || "").replace(BOX_MARKER_RE, " ").trim();
+  return String(description || "")
+    .replace(new RegExp(BOX_MARKER_SRC, "g"), " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 // The brand is set by hand on the card and never touched by the AI (the
@@ -146,9 +187,10 @@ function stripBrandMarker(description) {
 }
 
 // Marks an item that's known to sit somewhere the camera can't see (e.g. a
-// fridge's side door) - set entirely by hand, like the brand. Such an item
-// never gets a meaningful AI-estimated box, so this shows as a badge next to
-// quantity/condition instead of a detection frame on the photo.
+// fridge's side door or the freezer compartment) - set entirely by hand,
+// like the brand. Such an item never gets a meaningful AI-estimated box, so
+// this shows as a badge next to quantity/condition instead of a detection
+// frame on the photo.
 const SIDE_DOOR_RE = /\s*\[\[sidedoor:1\]\]\s*/;
 
 function extractSideDoor(description) {
@@ -157,6 +199,18 @@ function extractSideDoor(description) {
 
 function stripSideDoorMarker(description) {
   return String(description || "").replace(SIDE_DOOR_RE, " ").trim();
+}
+
+// Same idea as sidedoor, for an item known to sit in the freezer
+// compartment instead - also never visible to the fridge camera.
+const FREEZER_RE = /\s*\[\[freezer:1\]\]\s*/;
+
+function extractFreezer(description) {
+  return FREEZER_RE.test(String(description || ""));
+}
+
+function stripFreezerMarker(description) {
+  return String(description || "").replace(FREEZER_RE, " ").trim();
 }
 
 // Quantity, condition ("openness") and note are split into their own fields
@@ -209,7 +263,7 @@ function stripAllFieldMarkers(description) {
 }
 
 function stripMarkers(description) {
-  return stripAllFieldMarkers(stripSideDoorMarker(stripBrandMarker(stripBoxMarker(description))));
+  return stripAllFieldMarkers(stripFreezerMarker(stripSideDoorMarker(stripBrandMarker(stripBoxMarker(description)))));
 }
 
 // Legacy items (created before quantity/condition/note existed as separate
@@ -273,6 +327,7 @@ class FridgeCard extends HTMLElement {
     this._itemsStateKey = null;
     this._editingUid = null;
     this._showBoxes = false;
+    this._simpleMode = false;
     // Timestamp behind the currently-shown photo (entity last_changed, or a
     // manual "now" from a hard refresh) - see _updateImage/_hardRefreshImage.
     this._shownTs = null;
@@ -287,7 +342,7 @@ class FridgeCard extends HTMLElement {
     this._drawActive = false;
     this._drawStart = null;
     this._drawCurrent = null;
-    this._pendingBox = undefined; // undefined = untouched, object = drawn, null = explicitly cleared
+    this._pendingBoxes = undefined; // undefined = untouched; array = the edit session's working set of boxes
     // Snapshot of the edit form's live field values, captured just before a
     // re-render that can happen mid-edit (e.g. finishing a hand-drawn box),
     // so in-progress typing isn't lost when the row's HTML is rebuilt.
@@ -314,12 +369,13 @@ class FridgeCard extends HTMLElement {
     this._itemsStateKey = null;
     this._editingUid = null;
     this._showBoxes = this._loadShowBoxes();
+    this._simpleMode = this._loadSimpleMode();
     this._shownTs = null;
     this._history = [];
     this._historyIndex = -1;
     this._drawingUid = null;
     this._drawActive = false;
-    this._pendingBox = undefined;
+    this._pendingBoxes = undefined;
     this._draft = null;
     this._build();
     if (this._hass) this._refreshAll();
@@ -336,6 +392,25 @@ class FridgeCard extends HTMLElement {
   _saveShowBoxes() {
     try {
       localStorage.setItem(`fridge-card-boxes-${this._config.todo_entity}`, this._showBoxes ? "1" : "0");
+    } catch (e) {
+      /* storage unavailable, ignore */
+    }
+  }
+
+  // Simple mode swaps the item list for a plain name/qty/place/brand/expiry
+  // line per item, dropping the AI-confidence/condition/sidedoor/freezer
+  // badges - the pencil button still opens the same full edit form.
+  _loadSimpleMode() {
+    try {
+      return localStorage.getItem(`fridge-card-simple-${this._config.todo_entity}`) === "1";
+    } catch (e) {
+      return false;
+    }
+  }
+
+  _saveSimpleMode() {
+    try {
+      localStorage.setItem(`fridge-card-simple-${this._config.todo_entity}`, this._simpleMode ? "1" : "0");
     } catch (e) {
       /* storage unavailable, ignore */
     }
@@ -396,6 +471,10 @@ class FridgeCard extends HTMLElement {
               <ha-icon icon="mdi:vector-square"></ha-icon>
               <span>Detection frames</span>
             </button>
+            <button class="boxes-toggle simple-toggle" title="Simple list">
+              <ha-icon icon="mdi:format-list-bulleted"></ha-icon>
+              <span>Simple list</span>
+            </button>
           </div>
         </div>
         <div class="body">
@@ -442,6 +521,7 @@ class FridgeCard extends HTMLElement {
     this._titleEl = root.querySelector(".title");
     this._refreshBtnEl = root.querySelector(".refresh-btn");
     this._boxesToggleEl = root.querySelector(".boxes-toggle");
+    this._simpleToggleEl = root.querySelector(".simple-toggle");
     this._imgEl = root.querySelector(".fridge-img");
     this._imageWrapEl = root.querySelector(".image-wrap");
     this._overlayEl = root.querySelector(".detection-overlay");
@@ -481,6 +561,13 @@ class FridgeCard extends HTMLElement {
       this._boxesToggleEl.classList.toggle("active", this._showBoxes);
       this._renderBoxes();
     });
+    this._simpleToggleEl.classList.toggle("active", this._simpleMode);
+    this._simpleToggleEl.addEventListener("click", () => {
+      this._simpleMode = !this._simpleMode;
+      this._saveSimpleMode();
+      this._simpleToggleEl.classList.toggle("active", this._simpleMode);
+      this._renderItems();
+    });
     this._refreshBtnEl.addEventListener("click", () => this._hardRefreshImage());
     this._eatenToggleEl.addEventListener("click", () => {
       this._eatenExpanded = !this._eatenExpanded;
@@ -507,8 +594,23 @@ class FridgeCard extends HTMLElement {
     this._statusRowEl.addEventListener("click", (e) => this._onStatusClick(e));
     this._itemsEl.addEventListener("click", (e) => this._onItemsClick(e));
     this._itemsEl.addEventListener("input", (e) => {
-      if (!e.target.classList.contains("edit-due")) return;
+      if (!e.target.classList.contains("edit-due") && !e.target.classList.contains("box-due")) return;
       e.target.value = maskDMYInput(e.target.value);
+    });
+    // An item can be in the side door or the freezer, never both - checking
+    // one unchecks the other instead of letting the save path write both
+    // markers at once.
+    this._itemsEl.addEventListener("change", (e) => {
+      if (!e.target.checked) return;
+      const itemEl = e.target.closest(".item");
+      if (!itemEl) return;
+      if (e.target.classList.contains("edit-sidedoor")) {
+        const other = itemEl.querySelector(".edit-freezer");
+        if (other) other.checked = false;
+      } else if (e.target.classList.contains("edit-freezer")) {
+        const other = itemEl.querySelector(".edit-sidedoor");
+        if (other) other.checked = false;
+      }
     });
     root.querySelector(".add-btn").addEventListener("click", () => this._addItem());
 
@@ -617,13 +719,21 @@ class FridgeCard extends HTMLElement {
       x2: round1(Math.max(start.x, end.x)),
       y2: round1(Math.max(start.y, end.y)),
       manual: true,
+      due: null,
     };
     // Ignore accidental taps/tiny drags.
     if (box.x2 - box.x1 < 2 || box.y2 - box.y1 < 2) {
       this._renderBoxes();
       return;
     }
-    this._pendingBox = box;
+    // Adds to the working set rather than replacing it, so an item can carry
+    // more than one box (e.g. a few of it sitting in different spots). Any
+    // per-box due date already typed for the existing boxes is read out of
+    // the form first, so it survives this re-render.
+    const itemEl = this._itemsEl.querySelector(".item-editing");
+    const editingItem = this._items.find((i) => i.uid === this._editingUid);
+    const current = this._pendingBoxes !== undefined ? this._pendingBoxes : editingItem ? extractBoxes(editingItem.description) : [];
+    this._pendingBoxes = [...this._syncBoxDraftDates(itemEl, current), box];
     this._captureDraft();
     this._renderItems();
   }
@@ -639,22 +749,22 @@ class FridgeCard extends HTMLElement {
     let best = null;
     let bestArea = Infinity;
     for (const item of this._items) {
-      const box = extractBox(item.description);
-      if (!box) continue;
-      const x1 = Math.min(box.x1, box.x2);
-      const x2 = Math.max(box.x1, box.x2);
-      const y1 = Math.min(box.y1, box.y2);
-      const y2 = Math.max(box.y1, box.y2);
-      if (pt.x < x1 || pt.x > x2 || pt.y < y1 || pt.y > y2) continue;
-      const area = (x2 - x1) * (y2 - y1);
-      if (area < bestArea) {
-        bestArea = area;
-        best = item;
+      for (const box of extractBoxes(item.description)) {
+        const x1 = Math.min(box.x1, box.x2);
+        const x2 = Math.max(box.x1, box.x2);
+        const y1 = Math.min(box.y1, box.y2);
+        const y2 = Math.max(box.y1, box.y2);
+        if (pt.x < x1 || pt.x > x2 || pt.y < y1 || pt.y > y2) continue;
+        const area = (x2 - x1) * (y2 - y1);
+        if (area < bestArea) {
+          bestArea = area;
+          best = item;
+        }
       }
     }
     if (!best || best.uid === this._editingUid) return;
     this._editingUid = best.uid;
-    this._pendingBox = undefined;
+    this._pendingBoxes = undefined;
     this._draft = null;
     this._drawingUid = null;
     this._imageWrapEl.classList.remove("drawing");
@@ -680,6 +790,7 @@ class FridgeCard extends HTMLElement {
       brand: itemEl.querySelector(".edit-brand").value,
       due: itemEl.querySelector(".edit-due").value,
       sideDoor: itemEl.querySelector(".edit-sidedoor").checked,
+      freezer: itemEl.querySelector(".edit-freezer").checked,
     };
   }
 
@@ -688,20 +799,19 @@ class FridgeCard extends HTMLElement {
     const top = Math.min(box.y1, box.y2);
     const width = Math.abs(box.x2 - box.x1);
     const height = Math.abs(box.y2 - box.y1);
-    const labelHtml = label ? `<span class="detection-label">${escapeHtml(label)}</span>` : "";
+    const dueSuffix = box.due ? ` · ${formatDMY(new Date(`${box.due}T00:00:00`))}` : "";
+    const labelHtml = label ? `<span class="detection-label">${escapeHtml(label + dueSuffix)}</span>` : "";
     return `<div class="detection-box${pending ? " pending" : ""}" style="left:${left}%; top:${top}%; width:${width}%; height:${height}%;">${labelHtml}</div>`;
   }
 
-  // Draws one rectangle (with a truncated name tag) per item that carries
-  // an AI-estimated box (see extractBox) when detection frames are toggled
-  // on, plus - always, regardless of the toggle - the box (pending draw,
-  // existing, or a live drag preview) of whichever item is currently being
-  // edited, so the user can see what they're placing.
+  // Draws one rectangle (with a truncated name tag) per AI-estimated or
+  // hand-drawn box (see extractBoxes - an item can carry several) when
+  // detection frames are toggled on, plus - always, regardless of the
+  // toggle - every box in the working set of whichever item is currently
+  // being edited, so the user can see what they're placing.
   _renderBoxes() {
     if (!this._overlayEl) return;
-    const withBoxes = this._items
-      .map((item) => ({ item, box: extractBox(item.description) }))
-      .filter((x) => x.box);
+    const withBoxes = this._items.flatMap((item) => extractBoxes(item.description).map((box) => ({ item, box })));
 
     this._boxesToggleEl.toggleAttribute("hidden", withBoxes.length === 0);
     this._updateHeaderVisibility();
@@ -716,10 +826,9 @@ class FridgeCard extends HTMLElement {
 
     const editingItem = this._editingUid ? this._items.find((i) => i.uid === this._editingUid) : null;
 
-    if (this._editingUid && this._drawingUid !== this._editingUid) {
-      const box =
-        this._pendingBox !== undefined ? this._pendingBox : editingItem ? extractBox(editingItem.description) : null;
-      if (box) parts.push(this._boxDivHtml(box, true, editingItem ? editingItem.summary : ""));
+    if (this._editingUid) {
+      const boxes = this._pendingBoxes !== undefined ? this._pendingBoxes : editingItem ? extractBoxes(editingItem.description) : [];
+      for (const box of boxes) parts.push(this._boxDivHtml(box, true, editingItem ? editingItem.summary : ""));
     }
 
     if (this._drawActive && this._drawStart && this._drawCurrent) {
@@ -1017,7 +1126,7 @@ class FridgeCard extends HTMLElement {
 
   _itemRowHtml(item) {
     if (this._editingUid === item.uid) {
-      const hasBox = this._pendingBox !== undefined ? Boolean(this._pendingBox) : Boolean(extractBox(item.description));
+      const boxes = this._pendingBoxes !== undefined ? this._pendingBoxes : extractBoxes(item.description);
       // A draft (captured just before a mid-edit re-render, e.g. finishing
       // a hand-drawn box) always wins over the item's last-saved values,
       // so in-progress typing survives.
@@ -1028,6 +1137,7 @@ class FridgeCard extends HTMLElement {
       const noteVal = draft ? draft.note : fieldValue(extractNote, item.description);
       const brandVal = draft ? draft.brand : extractBrand(item.description);
       const sideDoorVal = draft ? draft.sideDoor : extractSideDoor(item.description);
+      const freezerVal = draft ? draft.freezer : extractFreezer(item.description);
       const confVal = extractConf(item.description);
       const dueVal = draft
         ? draft.due
@@ -1048,6 +1158,10 @@ class FridgeCard extends HTMLElement {
             <input class="edit-sidedoor" type="checkbox" ${sideDoorVal ? "checked" : ""} />
             In side door (camera can't see it)
           </label>
+          <label class="sidedoor-row">
+            <input class="edit-freezer" type="checkbox" ${freezerVal ? "checked" : ""} />
+            In freezer (camera can't see it)
+          </label>
           <input
             class="edit-due"
             type="text"
@@ -1057,12 +1171,28 @@ class FridgeCard extends HTMLElement {
             value="${escapeHtml(dueVal)}"
           />
           <div class="frame-row">
-            <span>Detection frame${hasBox ? " set" : " not set"}</span>
+            <span>${boxes.length ? `${boxes.length} detection frame${boxes.length === 1 ? "" : "s"}` : "No detection frame set"}</span>
             <div class="frame-actions">
-              <button type="button" class="text-btn" data-action="draw-box">${hasBox ? "Redraw" : "Draw on photo"}</button>
-              ${hasBox ? `<button type="button" class="text-btn danger" data-action="clear-box">Clear</button>` : ""}
+              <button type="button" class="text-btn" data-action="draw-box">Add box</button>
             </div>
           </div>
+          ${
+            boxes.length
+              ? `<div class="frame-list">
+                  ${boxes
+                    .map((b, i) => {
+                      const boxDueVal = b.due ? formatDMY(new Date(`${b.due}T00:00:00`)) : "";
+                      return `
+                    <span class="frame-chip">
+                      <span>Frame ${i + 1}</span>
+                      <input class="box-due" type="text" inputmode="numeric" maxlength="10" placeholder="dd/mm/yyyy" data-index="${i}" value="${escapeHtml(boxDueVal)}" />
+                      <button type="button" class="frame-remove" data-action="remove-box" data-index="${i}" title="Remove this frame">✕</button>
+                    </span>`;
+                    })
+                    .join("")}
+                </div>`
+              : ""
+          }
           <div class="edit-actions">
             <button class="text-btn danger" data-action="delete-item">Delete</button>
             <button class="text-btn" data-action="cancel-edit">Cancel</button>
@@ -1079,8 +1209,26 @@ class FridgeCard extends HTMLElement {
     const conf = extractConf(item.description);
     const brand = extractBrand(item.description);
     const sideDoor = extractSideDoor(item.description);
+    const freezer = extractFreezer(item.description);
     const qtyNumMatch = qty.match(/^(\d+)/);
     const qtyNum = qtyNumMatch ? Number(qtyNumMatch[1]) : null;
+
+    if (this._simpleMode) {
+      const place = sideDoor ? "Side door" : freezer ? "Freezer" : "Fridge";
+      const expires = info ? info.label : "";
+      const line = [qty, place, brand, expires].filter(Boolean).join(" · ");
+      return `
+        <div class="item item-simple" data-uid="${escapeHtml(item.uid)}">
+          <div class="simple-line">
+            <strong>${escapeHtml(item.summary)}</strong>${line ? ` — ${escapeHtml(line)}` : ""}
+          </div>
+          <button class="icon-btn edit-btn" data-action="edit-item" title="Edit">
+            <ha-icon icon="mdi:pencil-outline"></ha-icon>
+          </button>
+        </div>
+      `;
+    }
+
     return `
       <div class="item" data-uid="${escapeHtml(item.uid)}">
         <button class="icon-btn eaten-btn" data-action="mark-eaten" title="Mark as eaten">
@@ -1089,7 +1237,7 @@ class FridgeCard extends HTMLElement {
         <div class="item-main">
           <div class="item-name">${escapeHtml(item.summary)}</div>
           ${
-            qty || cond || conf || sideDoor
+            qty || cond || conf || sideDoor || freezer
               ? `<div class="item-meta">
                   ${
                     qty
@@ -1105,6 +1253,7 @@ class FridgeCard extends HTMLElement {
                   ${cond ? `<span class="meta-chip"><ha-icon icon="mdi:package-variant-closed"></ha-icon>${escapeHtml(cond)}</span>` : ""}
                   ${conf ? `<span class="meta-chip meta-conf">${escapeHtml(conf)}%</span>` : ""}
                   ${sideDoor ? `<span class="meta-chip" title="Not visible to the camera - no detection frame"><ha-icon icon="mdi:door"></ha-icon>Side door</span>` : ""}
+                  ${freezer ? `<span class="meta-chip" title="Not visible to the camera - no detection frame"><ha-icon icon="mdi:snowflake"></ha-icon>Freezer</span>` : ""}
                 </div>`
               : ""
           }
@@ -1130,12 +1279,12 @@ class FridgeCard extends HTMLElement {
 
     if (action === "edit-item") {
       this._editingUid = uid;
-      this._pendingBox = undefined;
+      this._pendingBoxes = undefined;
       this._draft = null;
       this._renderItems();
     } else if (action === "cancel-edit") {
       this._editingUid = null;
-      this._pendingBox = undefined;
+      this._pendingBoxes = undefined;
       this._draft = null;
       this._drawingUid = null;
       this._imageWrapEl.classList.remove("drawing");
@@ -1153,17 +1302,38 @@ class FridgeCard extends HTMLElement {
       this._drawingUid = uid;
       this._imageWrapEl.classList.add("drawing");
       this._renderBoxes();
-    } else if (action === "clear-box") {
-      this._pendingBox = null;
+    } else if (action === "remove-box") {
+      const idx = Number(btn.dataset.index);
+      const item = this._items.find((i) => i.uid === uid);
+      const current = this._pendingBoxes !== undefined ? this._pendingBoxes : item ? extractBoxes(item.description) : [];
+      this._pendingBoxes = this._syncBoxDraftDates(itemEl, current).filter((_, i) => i !== idx);
       this._captureDraft();
       this._renderItems();
     }
   }
 
+  // Reads whatever per-box due-date inputs are currently in the open edit
+  // form and merges them onto the matching box (by index) - same rule as
+  // the item-level due field: empty clears the date, non-empty-but-
+  // unparseable text is left alone rather than risking wiping it over a
+  // typo. Called before any mutation that would re-render the box list
+  // (adding/removing a box, or saving), so in-progress typing isn't lost.
+  _syncBoxDraftDates(itemEl, boxes) {
+    if (!itemEl) return boxes;
+    return boxes.map((box, i) => {
+      const input = itemEl.querySelector(`.box-due[data-index="${i}"]`);
+      if (!input) return box;
+      const text = input.value.trim();
+      if (text === "") return { ...box, due: null };
+      const due = parseDMY(text);
+      return due !== null ? { ...box, due } : box;
+    });
+  }
+
   _addItem() {
     if (this._items.some((i) => i.uid === "__new__")) return;
     this._editingUid = "__new__";
-    this._pendingBox = undefined;
+    this._pendingBoxes = undefined;
     this._draft = null;
     this._items = [{ uid: "__new__", summary: "", description: "", due: null }, ...this._items];
     this._renderItems();
@@ -1180,19 +1350,24 @@ class FridgeCard extends HTMLElement {
     const note = itemEl.querySelector(".edit-note").value.trim();
     const brand = itemEl.querySelector(".edit-brand").value.trim();
     const sideDoor = itemEl.querySelector(".edit-sidedoor").checked;
+    const freezer = itemEl.querySelector(".edit-freezer").checked;
     const dueText = itemEl.querySelector(".edit-due").value.trim();
     const due = dueText ? parseDMY(dueText) : null;
     if (!name) return;
 
-    // A manually drawn/cleared frame wins; otherwise carry the item's
-    // existing [[box:...]] marker forward (editing the description strips
-    // it for display, so it would otherwise be lost until the next scan).
-    // An item in the side door has no meaningful box - the camera can't see
-    // it there - so marking it drops any frame instead of keeping a stale one.
+    // The edited/added/removed frames win; otherwise carry the item's
+    // existing [[box:...]] markers forward (editing the description strips
+    // them for display, so they'd otherwise be lost until the next scan).
+    // An item in the side door or freezer has no meaningful box - the
+    // camera can't see it there - so marking it drops every frame instead
+    // of keeping stale ones.
     const existing = this._items.find((i) => i.uid === uid);
-    const existingBox = existing ? extractBox(existing.description) : null;
+    const existingBoxes = existing ? extractBoxes(existing.description) : [];
     const existingConf = existing ? extractConf(existing.description) : "";
-    const box = sideDoor ? null : this._pendingBox !== undefined ? this._pendingBox : existingBox;
+    const boxes =
+      sideDoor || freezer
+        ? []
+        : this._syncBoxDraftDates(itemEl, this._pendingBoxes !== undefined ? this._pendingBoxes : existingBoxes);
 
     // Quantity/condition/note are always written back through the "manual"
     // marker when saved from the card - same idea as a hand-drawn detection
@@ -1205,12 +1380,13 @@ class FridgeCard extends HTMLElement {
     if (cond) parts.push(fieldMarker("cond", cond, true));
     if (note) parts.push(fieldMarker("note", note, true));
     if (existingConf) parts.push(`[[conf:${existingConf}]]`);
-    if (box) parts.push(boxMarker(box));
+    for (const box of boxes) parts.push(boxMarker(box));
     if (brand) {
       // Strip brackets so the value can't break out of the [[brand:...]] marker.
       parts.push(`[[brand:${brand.replace(/[[\]]/g, "")}]]`);
     }
     if (sideDoor) parts.push("[[sidedoor:1]]");
+    if (freezer) parts.push("[[freezer:1]]");
     const description = parts.join(" ");
 
     try {
@@ -1257,7 +1433,7 @@ class FridgeCard extends HTMLElement {
       }
     } finally {
       this._editingUid = null;
-      this._pendingBox = undefined;
+      this._pendingBoxes = undefined;
       this._draft = null;
       await this._fetchItems();
     }
@@ -1301,16 +1477,18 @@ class FridgeCard extends HTMLElement {
     const note = extractNote(item.description);
     const conf = extractConf(item.description);
     const brand = extractBrand(item.description);
-    const box = extractBox(item.description);
+    const boxes = extractBoxes(item.description);
     const sideDoor = extractSideDoor(item.description);
+    const freezer = extractFreezer(item.description);
 
     const parts = [fieldMarker("qty", newQty, true)];
     if (cond) parts.push(fieldMarker("cond", cond.value, cond.manual));
     if (note) parts.push(fieldMarker("note", note.value, note.manual));
     if (conf) parts.push(`[[conf:${conf}]]`);
-    if (box) parts.push(boxMarker(box));
+    for (const box of boxes) parts.push(boxMarker(box));
     if (brand) parts.push(`[[brand:${brand.replace(/[[\]]/g, "")}]]`);
     if (sideDoor) parts.push("[[sidedoor:1]]");
+    if (freezer) parts.push("[[freezer:1]]");
 
     await this._hass.callService("todo", "update_item", {
       entity_id: this._config.todo_entity,
@@ -1321,7 +1499,7 @@ class FridgeCard extends HTMLElement {
   }
 
   async _deleteItem(uid) {
-    this._pendingBox = undefined;
+    this._pendingBoxes = undefined;
     this._draft = null;
     if (uid === "__new__") {
       this._editingUid = null;
@@ -1416,9 +1594,18 @@ class FridgeCard extends HTMLElement {
       .edit-conf { font-size: 0.75rem; color: var(--secondary-text-color); }
       .sidedoor-row { display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--secondary-text-color); }
       .sidedoor-row input { width: auto; padding: 0; }
+      .item-simple { align-items: center; gap: 8px; }
+      .simple-line { flex: 1; min-width: 0; font-size: 0.85rem; color: var(--primary-text-color); overflow-wrap: anywhere; }
+      .simple-line strong { font-weight: 600; }
       .frame-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.8rem; color: var(--secondary-text-color); }
       .frame-actions { display: flex; gap: 4px; flex-shrink: 0; }
       .frame-actions .text-btn { padding: 4px 10px; }
+      .frame-list { display: flex; flex-direction: column; gap: 4px; }
+      .frame-chip { display: flex; align-items: center; gap: 6px; font-size: 0.78rem; color: var(--secondary-text-color); background: var(--card-background-color, rgba(0,0,0,0.03)); border-radius: 8px; padding: 4px 8px; }
+      .frame-chip > span:first-child { flex-shrink: 0; }
+      .box-due { flex: 1; min-width: 0; font-size: 0.78rem !important; padding: 4px 6px !important; }
+      .frame-remove { border: none; background: none; color: var(--error-color, #f44336); cursor: pointer; font-size: 0.85rem; padding: 2px 4px; flex-shrink: 0; }
+      .frame-remove:hover { background: var(--divider-color, rgba(0,0,0,0.1)); border-radius: 4px; }
       .edit-actions { display: flex; justify-content: flex-end; gap: 8px; }
       .text-btn { border: none; background: none; padding: 6px 12px; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer; color: var(--primary-text-color); font-family: inherit; }
       .text-btn:hover { background: var(--divider-color, rgba(0,0,0,0.1)); }
