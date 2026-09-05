@@ -859,6 +859,14 @@ class FridgeCard extends HTMLElement {
     this._boxesToggleEl.toggleAttribute("hidden", withBoxes.length === 0);
     this._updateHeaderVisibility();
 
+    // A saved snapshot has its own overlay state (cleared by _showHistory) -
+    // none of the live item list's boxes belong to it, including a hover
+    // highlight.
+    if (this._historyIndex !== -1) {
+      this._overlayEl.innerHTML = "";
+      return;
+    }
+
     const parts = [];
     if (this._showBoxes) {
       for (const { item, box } of withBoxes) {
