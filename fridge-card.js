@@ -14,7 +14,9 @@
  * come from a companion fridge-core automation, or can be drawn by hand on
  * the photo while editing an item when the AI gets it wrong or skips it -
  * tapping a box on the photo (whether or not frames are currently toggled
- * on) jumps straight to editing that item. Editing quantity, condition,
+ * on) jumps straight to editing that item. Each frame can also be
+ * individually redrawn in place (keeping its own expiration date) instead
+ * of removing and re-adding it. Editing quantity, condition,
  * note or brand (or drawing a box by hand) protects that field from being
  * overwritten by a fresh AI guess on the next scan; the Brand field also
  * offers previously used brand names as autocomplete suggestions, so a
@@ -47,7 +49,7 @@
  * https://github.com/jan-tdy/fridge-card
  */
 
-const CARD_VERSION = "1.11.0";
+const CARD_VERSION = "1.12.0";
 
 function fireEvent(node, type, detail = {}, options = {}) {
   const event = new Event(type, {
@@ -348,8 +350,11 @@ class FridgeCard extends HTMLElement {
     // into _history while browsing a saved one.
     this._history = [];
     this._historyIndex = -1;
-    // Manual box drawing (draw-on-photo) state.
+    // Manual box drawing (draw-on-photo) state. _drawingIndex is null while
+    // adding a new box (appended on finish) or the index of an existing
+    // box being redrawn in place (replaced on finish, keeping its date).
     this._drawingUid = null;
+    this._drawingIndex = null;
     this._drawActive = false;
     this._drawStart = null;
     this._drawCurrent = null;
@@ -387,6 +392,7 @@ class FridgeCard extends HTMLElement {
     this._history = [];
     this._historyIndex = -1;
     this._drawingUid = null;
+    this._drawingIndex = null;
     this._drawActive = false;
     this._pendingBoxes = undefined;
     this._draft = null;
@@ -747,7 +753,9 @@ class FridgeCard extends HTMLElement {
     this._drawActive = false;
     const end = this._pointerToBoxPercent(e.clientX, e.clientY);
     const start = this._drawStart;
+    const redrawIndex = this._drawingIndex;
     this._drawingUid = null;
+    this._drawingIndex = null;
     this._drawStart = null;
     this._drawCurrent = null;
     this._imageWrapEl.classList.remove("drawing");
@@ -766,14 +774,25 @@ class FridgeCard extends HTMLElement {
       this._renderBoxes();
       return;
     }
-    // Adds to the working set rather than replacing it, so an item can carry
-    // more than one box (e.g. a few of it sitting in different spots). Any
-    // per-box due date already typed for the existing boxes is read out of
-    // the form first, so it survives this re-render.
+    // A redraw replaces that one frame in place (keeping its own expiration
+    // date); otherwise this adds to the working set rather than replacing
+    // it, so an item can carry more than one box (e.g. a few of it sitting
+    // in different spots). Any per-box due date already typed for the
+    // existing boxes is read out of the form first, so it survives this
+    // re-render.
     const itemEl = this._itemsEl.querySelector(".item-editing");
     const editingItem = this._items.find((i) => i.uid === this._editingUid);
-    const current = this._pendingBoxes !== undefined ? this._pendingBoxes : editingItem ? extractBoxes(editingItem.description) : [];
-    this._pendingBoxes = [...this._syncBoxDraftDates(itemEl, current), box];
+    const current = this._syncBoxDraftDates(
+      itemEl,
+      this._pendingBoxes !== undefined ? this._pendingBoxes : editingItem ? extractBoxes(editingItem.description) : []
+    );
+    if (redrawIndex !== null && redrawIndex < current.length) {
+      const next = [...current];
+      next[redrawIndex] = { ...box, due: current[redrawIndex].due };
+      this._pendingBoxes = next;
+    } else {
+      this._pendingBoxes = [...current, box];
+    }
     this._captureDraft();
     this._renderItems();
   }
@@ -807,6 +826,7 @@ class FridgeCard extends HTMLElement {
     this._pendingBoxes = undefined;
     this._draft = null;
     this._drawingUid = null;
+    this._drawingIndex = null;
     this._imageWrapEl.classList.remove("drawing");
     this._renderItems();
     requestAnimationFrame(() => {
@@ -879,7 +899,12 @@ class FridgeCard extends HTMLElement {
 
     if (this._editingUid) {
       const boxes = this._pendingBoxes !== undefined ? this._pendingBoxes : editingItem ? extractBoxes(editingItem.description) : [];
-      for (const box of boxes) parts.push(this._boxDivHtml(box, "pending", editingItem ? editingItem.summary : ""));
+      boxes.forEach((box, i) => {
+        // Hide the one frame currently being redrawn - only the live drag
+        // preview below should stand in for it until the drag finishes.
+        if (this._drawingUid === this._editingUid && this._drawingIndex === i) return;
+        parts.push(this._boxDivHtml(box, "pending", editingItem ? editingItem.summary : ""));
+      });
     }
 
     if (this._hoveredUid && this._hoveredUid !== this._editingUid) {
@@ -1260,6 +1285,7 @@ class FridgeCard extends HTMLElement {
                     <span class="frame-chip">
                       <span>Frame ${i + 1}</span>
                       <input class="box-due" type="text" inputmode="numeric" maxlength="10" placeholder="dd/mm/yyyy" data-index="${i}" value="${escapeHtml(boxDueVal)}" />
+                      <button type="button" class="text-btn" data-action="redraw-box" data-index="${i}" title="Redraw this frame">Redraw</button>
                       <button type="button" class="frame-remove" data-action="remove-box" data-index="${i}" title="Remove this frame">✕</button>
                     </span>`;
                     })
@@ -1376,6 +1402,7 @@ class FridgeCard extends HTMLElement {
       this._pendingBoxes = undefined;
       this._draft = null;
       this._drawingUid = null;
+      this._drawingIndex = null;
       this._imageWrapEl.classList.remove("drawing");
       if (uid === "__new__") this._items = this._items.filter((i) => i.uid !== "__new__");
       this._renderItems();
@@ -1389,6 +1416,12 @@ class FridgeCard extends HTMLElement {
       this._saveItem(uid, itemEl);
     } else if (action === "draw-box") {
       this._drawingUid = uid;
+      this._drawingIndex = null;
+      this._imageWrapEl.classList.add("drawing");
+      this._renderBoxes();
+    } else if (action === "redraw-box") {
+      this._drawingUid = uid;
+      this._drawingIndex = Number(btn.dataset.index);
       this._imageWrapEl.classList.add("drawing");
       this._renderBoxes();
     } else if (action === "remove-box") {
@@ -1695,6 +1728,7 @@ class FridgeCard extends HTMLElement {
       .frame-list { display: flex; flex-direction: column; gap: 4px; }
       .frame-chip { display: flex; align-items: center; gap: 6px; font-size: 0.78rem; color: var(--secondary-text-color); background: var(--card-background-color, rgba(0,0,0,0.03)); border-radius: 8px; padding: 4px 8px; }
       .frame-chip > span:first-child { flex-shrink: 0; }
+      .frame-chip .text-btn { padding: 2px 6px; font-size: 0.78rem; flex-shrink: 0; }
       .box-due { flex: 1; min-width: 0; font-size: 0.78rem !important; padding: 4px 6px !important; }
       .frame-remove { border: none; background: none; color: var(--error-color, #f44336); cursor: pointer; font-size: 0.85rem; padding: 2px 4px; flex-shrink: 0; }
       .frame-remove:hover { background: var(--divider-color, rgba(0,0,0,0.1)); border-radius: 4px; }
