@@ -664,10 +664,16 @@ class FridgeCard extends HTMLElement {
     this._imageWrapEl.addEventListener("pointermove", (e) => this._onDrawMove(e));
     this._imageWrapEl.addEventListener("click", (e) => this._onImageClick(e));
     // _build() can re-run (e.g. every keystroke in the config editor's live
-    // preview); only ever attach one window-level pointerup listener.
+    // preview); only ever attach one window-level pointerup/pointercancel
+    // listener pair.
     if (!this._pointerUpBound) {
       this._pointerUpBound = true;
       window.addEventListener("pointerup", (e) => this._onDrawEnd(e));
+      // A cancelled pointer sequence (e.g. a touch drag interrupted by a
+      // system gesture) never fires pointerup, so _onDrawEnd would never
+      // run and the card would be stuck in drawing mode - with the frame
+      // being redrawn, if any, hidden - forever.
+      window.addEventListener("pointercancel", () => this._cancelDrawing());
     }
 
     this._applyImageTransform();
@@ -745,6 +751,19 @@ class FridgeCard extends HTMLElement {
   _onDrawMove(e) {
     if (!this._drawingUid || !this._drawActive) return;
     this._drawCurrent = this._pointerToBoxPercent(e.clientX, e.clientY);
+    this._renderBoxes();
+  }
+
+  // Drops out of drawing/redrawing mode entirely without committing a box -
+  // used when the pointer sequence is cancelled instead of finishing
+  // normally (see the "pointercancel" listener in _build).
+  _cancelDrawing() {
+    this._drawingUid = null;
+    this._drawingIndex = null;
+    this._drawActive = false;
+    this._drawStart = null;
+    this._drawCurrent = null;
+    if (this._imageWrapEl) this._imageWrapEl.classList.remove("drawing");
     this._renderBoxes();
   }
 
