@@ -39,9 +39,10 @@ AI-recognized contents.
   be **drawn by hand**: while editing an item, hit "Add box" and drag a
   rectangle over it. An item can carry more than one box (e.g. a few of
   the same item sitting in different spots in the photo), each with its
-  own optional expiration date. Tapping a box on the photo — whether or
-  not the frames are currently toggled on — jumps straight to editing
-  that item. Note: at `image_rotation` 90/270° the name tag rotates
+  own optional expiration date, and each can be **redrawn** individually
+  in place without removing and re-adding it. Tapping a box on the photo
+  — whether or not the frames are currently toggled on — jumps straight
+  to editing that item. Note: at `image_rotation` 90/270° the name tag rotates
   together with the frame, so it reads sideways. On a mouse (not touch),
   hovering an item's row in the list highlights its frame(s) on the photo
   in orange, whether or not detection frames are toggled on
@@ -162,11 +163,13 @@ services, so your `todo_entity` must support the corresponding features
 (create/update/delete, description, due date).
 
 While editing, use **Add box** to set one or more detection frames by
-hand — drag a rectangle over the item on the photo each time; remove one
-with the ✕ next to it in the list. This works correctly at any
-`image_rotation`. Each frame can carry its own expiration date, for items
-that have more than one instance in the fridge with different best-by
-dates. Quantity, condition, note, the hand-drawn frames and the Brand
+hand — drag a rectangle over the item on the photo each time; **Redraw**
+replaces one frame in place (keeping its own expiration date) instead of
+removing and re-adding it, and the ✕ next to it removes it outright. This
+works correctly at any `image_rotation`. Each frame can carry its own
+expiration date, for items that have more than one instance in the
+fridge with different best-by dates. Quantity, condition, note, the
+hand-drawn frames and the Brand
 field are all matched by item name and carried forward by the
 fridge-core automation on the next scan, instead of being overwritten by
 a fresh (and possibly wrong) AI guess.
