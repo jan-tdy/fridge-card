@@ -42,7 +42,9 @@ AI-recognized contents.
   own optional expiration date. Tapping a box on the photo — whether or
   not the frames are currently toggled on — jumps straight to editing
   that item. Note: at `image_rotation` 90/270° the name tag rotates
-  together with the frame, so it reads sideways
+  together with the frame, so it reads sideways. On a mouse (not touch),
+  hovering an item's row in the list highlights its frame(s) on the photo
+  in orange, whether or not detection frames are toggled on
 - An item can be marked **in side door** or **in freezer** by hand — for
   something the camera can't see (a side compartment or the freezer
   drawer). Shows as a badge next to quantity/condition instead of a
@@ -51,7 +53,11 @@ AI-recognized contents.
   view, and a button to trigger the fridge-analysis automation
 - Optional **simple list** view: toggle in the header to swap the item
   list for a compact name/quantity/place/brand/expiration line per item,
-  with no badges — the pencil icon still opens the full edit form
+  with no badges — the pencil icon and the quantity down-arrow still
+  work, and the name turns red once the item is expiring soon or overdue
+- A **search box** above the item list filters by name as you type, in
+  either list view — the item you're currently editing always stays
+  visible even if it no longer matches
 - Fully configurable from the Lovelace UI editor — no YAML required
 
 <img width="1610" height="682" alt="image" src="https://github.com/user-attachments/assets/75e08cbb-0770-480c-953e-8a6b58193326" />
