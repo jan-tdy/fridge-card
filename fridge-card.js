@@ -103,6 +103,19 @@ function parseDMY(text) {
   return `${year}-${pad(month)}-${pad(day)}`;
 }
 
+// True for a real calendar date in "yyyy-mm-dd" form - rejects e.g.
+// "2026-02-30", which the Date constructor would otherwise silently roll
+// over to March 2nd instead of erroring.
+function isValidISODate(text) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(text || ""));
+  if (!m) return false;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const d = new Date(year, month - 1, day);
+  return d.getFullYear() === year && d.getMonth() === month - 1 && d.getDate() === day;
+}
+
 // Auto-inserts the "/" separators as the user types digits.
 function maskDMYInput(raw) {
   const digits = String(raw || "").replace(/\D/g, "").slice(0, 8);
@@ -138,7 +151,7 @@ function extractBoxes(description) {
   while ((m = re.exec(text))) {
     const [x1, y1, x2, y2] = m.slice(1, 5).map(Number);
     if ([x1, y1, x2, y2].some((n) => Number.isNaN(n))) continue;
-    boxes.push({ x1, y1, x2, y2, manual: m[5] === "m", due: m[6] || null });
+    boxes.push({ x1, y1, x2, y2, manual: m[5] === "m", due: m[6] && isValidISODate(m[6]) ? m[6] : null });
   }
   return boxes;
 }
@@ -583,6 +596,21 @@ class FridgeCard extends HTMLElement {
     this._itemsEl.addEventListener("input", (e) => {
       if (!e.target.classList.contains("edit-due") && !e.target.classList.contains("box-due")) return;
       e.target.value = maskDMYInput(e.target.value);
+    });
+    // An item can be in the side door or the freezer, never both - checking
+    // one unchecks the other instead of letting the save path write both
+    // markers at once.
+    this._itemsEl.addEventListener("change", (e) => {
+      if (!e.target.checked) return;
+      const itemEl = e.target.closest(".item");
+      if (!itemEl) return;
+      if (e.target.classList.contains("edit-sidedoor")) {
+        const other = itemEl.querySelector(".edit-freezer");
+        if (other) other.checked = false;
+      } else if (e.target.classList.contains("edit-freezer")) {
+        const other = itemEl.querySelector(".edit-sidedoor");
+        if (other) other.checked = false;
+      }
     });
     root.querySelector(".add-btn").addEventListener("click", () => this._addItem());
 
