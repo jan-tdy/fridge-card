@@ -37,12 +37,17 @@
  * next to quantity/condition instead of a detection frame, and drops any
  * existing box(es). A "Simple list" toggle in the header swaps the item
  * list for a compact name/quantity/place/brand/expiration line per item
- * with no badges - the pencil icon still opens the full edit form.
+ * with no badges - the pencil icon and the quantity down-arrow still work,
+ * and the item's name turns red once it's expiring soon or overdue. A
+ * search box above the list filters items by name in either mode. On a
+ * mouse (not touch), hovering an item's row highlights its detection
+ * frame(s) on the photo in orange, regardless of the "Detection frames"
+ * toggle.
  *
  * https://github.com/jan-tdy/fridge-card
  */
 
-const CARD_VERSION = "1.10.0";
+const CARD_VERSION = "1.11.0";
 
 function fireEvent(node, type, detail = {}, options = {}) {
   const event = new Event(type, {
@@ -328,6 +333,12 @@ class FridgeCard extends HTMLElement {
     this._editingUid = null;
     this._showBoxes = false;
     this._simpleMode = false;
+    this._searchQuery = "";
+    // uid of whichever item row the mouse is currently over (desktop only -
+    // see the "mouseover"/"mouseout" listeners in _build) - highlights that
+    // item's detection frame(s) on the photo in orange, regardless of the
+    // "Detection frames" toggle. See _renderBoxes.
+    this._hoveredUid = null;
     // Timestamp behind the currently-shown photo (entity last_changed, or a
     // manual "now" from a hard refresh) - see _updateImage/_hardRefreshImage.
     this._shownTs = null;
@@ -370,6 +381,8 @@ class FridgeCard extends HTMLElement {
     this._editingUid = null;
     this._showBoxes = this._loadShowBoxes();
     this._simpleMode = this._loadSimpleMode();
+    this._searchQuery = "";
+    this._hoveredUid = null;
     this._shownTs = null;
     this._history = [];
     this._historyIndex = -1;
@@ -497,6 +510,7 @@ class FridgeCard extends HTMLElement {
             <div class="status-row"></div>
           </div>
           <div class="list-col">
+            <input class="item-search" type="text" placeholder="Search items…" />
             <div class="items"></div>
             <datalist id="brand-list"></datalist>
             <div class="add-row">
@@ -527,6 +541,7 @@ class FridgeCard extends HTMLElement {
     this._overlayEl = root.querySelector(".detection-overlay");
     this._fallbackEl = root.querySelector(".fallback");
     this._statusRowEl = root.querySelector(".status-row");
+    this._searchInputEl = root.querySelector(".item-search");
     this._itemsEl = root.querySelector(".items");
     this._brandListEl = root.querySelector("#brand-list");
     this._eatenSectionEl = root.querySelector(".eaten-section");
@@ -613,6 +628,31 @@ class FridgeCard extends HTMLElement {
       }
     });
     root.querySelector(".add-btn").addEventListener("click", () => this._addItem());
+    this._searchInputEl.addEventListener("input", () => {
+      this._searchQuery = this._searchInputEl.value.trim().toLowerCase();
+      this._renderItems();
+    });
+
+    // Highlights an item's detection frame(s) on the photo in orange while
+    // the mouse hovers its row, regardless of the "Detection frames"
+    // toggle - desktop only (matchMedia guards against a touch device's
+    // synthetic hover after a tap).
+    this._itemsEl.addEventListener("mouseover", (e) => {
+      if (!window.matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+      const itemEl = e.target.closest(".item");
+      if (!itemEl || itemEl.classList.contains("item-editing")) return;
+      const uid = itemEl.dataset.uid;
+      if (uid === this._hoveredUid) return;
+      this._hoveredUid = uid;
+      this._renderBoxes();
+    });
+    this._itemsEl.addEventListener("mouseout", (e) => {
+      const itemEl = e.target.closest(".item");
+      if (!itemEl || itemEl.contains(e.relatedTarget)) return;
+      if (itemEl.dataset.uid !== this._hoveredUid) return;
+      this._hoveredUid = null;
+      this._renderBoxes();
+    });
 
     this._imageWrapEl.addEventListener("pointerdown", (e) => this._onDrawStart(e));
     this._imageWrapEl.addEventListener("pointermove", (e) => this._onDrawMove(e));
@@ -794,21 +834,24 @@ class FridgeCard extends HTMLElement {
     };
   }
 
-  _boxDivHtml(box, pending, label) {
+  _boxDivHtml(box, variant, label) {
     const left = Math.min(box.x1, box.x2);
     const top = Math.min(box.y1, box.y2);
     const width = Math.abs(box.x2 - box.x1);
     const height = Math.abs(box.y2 - box.y1);
     const dueSuffix = box.due ? ` · ${formatDMY(new Date(`${box.due}T00:00:00`))}` : "";
     const labelHtml = label ? `<span class="detection-label">${escapeHtml(label + dueSuffix)}</span>` : "";
-    return `<div class="detection-box${pending ? " pending" : ""}" style="left:${left}%; top:${top}%; width:${width}%; height:${height}%;">${labelHtml}</div>`;
+    const variantClass = variant ? ` ${variant}` : "";
+    return `<div class="detection-box${variantClass}" style="left:${left}%; top:${top}%; width:${width}%; height:${height}%;">${labelHtml}</div>`;
   }
 
   // Draws one rectangle (with a truncated name tag) per AI-estimated or
   // hand-drawn box (see extractBoxes - an item can carry several) when
   // detection frames are toggled on, plus - always, regardless of the
   // toggle - every box in the working set of whichever item is currently
-  // being edited, so the user can see what they're placing.
+  // being edited, so the user can see what they're placing, plus - also
+  // regardless of the toggle - the hovered item's box(es) in orange (see
+  // the "mouseover"/"mouseout" listeners in _build).
   _renderBoxes() {
     if (!this._overlayEl) return;
     const withBoxes = this._items.flatMap((item) => extractBoxes(item.description).map((box) => ({ item, box })));
@@ -819,8 +862,8 @@ class FridgeCard extends HTMLElement {
     const parts = [];
     if (this._showBoxes) {
       for (const { item, box } of withBoxes) {
-        if (item.uid === this._editingUid) continue; // handled below instead
-        parts.push(this._boxDivHtml(box, false, item.summary));
+        if (item.uid === this._editingUid || item.uid === this._hoveredUid) continue; // handled below instead
+        parts.push(this._boxDivHtml(box, "", item.summary));
       }
     }
 
@@ -828,7 +871,16 @@ class FridgeCard extends HTMLElement {
 
     if (this._editingUid) {
       const boxes = this._pendingBoxes !== undefined ? this._pendingBoxes : editingItem ? extractBoxes(editingItem.description) : [];
-      for (const box of boxes) parts.push(this._boxDivHtml(box, true, editingItem ? editingItem.summary : ""));
+      for (const box of boxes) parts.push(this._boxDivHtml(box, "pending", editingItem ? editingItem.summary : ""));
+    }
+
+    if (this._hoveredUid && this._hoveredUid !== this._editingUid) {
+      const hoveredItem = this._items.find((i) => i.uid === this._hoveredUid);
+      if (hoveredItem) {
+        for (const box of extractBoxes(hoveredItem.description)) {
+          parts.push(this._boxDivHtml(box, "hover", hoveredItem.summary));
+        }
+      }
     }
 
     if (this._drawActive && this._drawStart && this._drawCurrent) {
@@ -840,7 +892,7 @@ class FridgeCard extends HTMLElement {
             x2: Math.max(this._drawStart.x, this._drawCurrent.x),
             y2: Math.max(this._drawStart.y, this._drawCurrent.y),
           },
-          true,
+          "pending",
           editingItem ? editingItem.summary : ""
         )
       );
@@ -1068,7 +1120,21 @@ class FridgeCard extends HTMLElement {
       this._renderBoxes();
       return;
     }
-    const sorted = [...this._items].sort((a, b) => {
+    // The item currently being added/edited always stays visible, even if
+    // its name doesn't match the search box, so a search doesn't yank the
+    // open edit form out from under the user.
+    const query = this._searchQuery;
+    const filtered = query
+      ? this._items.filter(
+          (item) => item.uid === this._editingUid || (item.summary || "").toLowerCase().includes(query)
+        )
+      : this._items;
+    if (!filtered.length) {
+      this._itemsEl.innerHTML = `<div class="empty">No items match your search.</div>`;
+      this._renderBoxes();
+      return;
+    }
+    const sorted = [...filtered].sort((a, b) => {
       if (a.due && b.due) return a.due < b.due ? -1 : a.due > b.due ? 1 : 0;
       if (a.due) return -1;
       if (b.due) return 1;
@@ -1215,12 +1281,27 @@ class FridgeCard extends HTMLElement {
 
     if (this._simpleMode) {
       const place = sideDoor ? "Side door" : freezer ? "Freezer" : "Fridge";
-      const expires = info ? info.label : "";
-      const line = [qty, place, brand, expires].filter(Boolean).join(" · ");
+      const isWarn = Boolean(info && info.cls);
+      const parts = [];
+      if (qty) {
+        parts.push(
+          `<span>${escapeHtml(qty)}${
+            qtyNum !== null
+              ? `<button type="button" class="qty-dec-btn" data-action="decrement-qty" ${qtyNum <= 1 ? "disabled" : ""} title="One less">
+                  <ha-icon icon="mdi:chevron-down"></ha-icon>
+                </button>`
+              : ""
+          }</span>`
+        );
+      }
+      parts.push(escapeHtml(place));
+      if (brand) parts.push(escapeHtml(brand));
+      if (info) parts.push(`<span class="${isWarn ? "simple-name-warn" : ""}">${escapeHtml(info.label)}</span>`);
+      const line = parts.join(" · ");
       return `
         <div class="item item-simple" data-uid="${escapeHtml(item.uid)}">
           <div class="simple-line">
-            <strong>${escapeHtml(item.summary)}</strong>${line ? ` — ${escapeHtml(line)}` : ""}
+            <strong class="${isWarn ? "simple-name-warn" : ""}">${escapeHtml(item.summary)}</strong>${line ? ` — ${line}` : ""}
           </div>
           <button class="icon-btn edit-btn" data-action="edit-item" title="Edit">
             <ha-icon icon="mdi:pencil-outline"></ha-icon>
@@ -1542,6 +1623,8 @@ class FridgeCard extends HTMLElement {
       .detection-box.pending { border-color: #2196f3; border-style: dashed; background: rgba(33,150,243,0.1); }
       .detection-label { position: absolute; top: 0; left: 0; max-width: 130px; background: #ff3b3b; color: #fff; font-size: 11px; font-weight: 600; line-height: 1.5; padding: 1px 6px; border-radius: 0 0 4px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .detection-box.pending .detection-label { background: #2196f3; }
+      .detection-box.hover { border-color: #ff9800; box-shadow: 0 0 0 1px rgba(0,0,0,0.35), 0 0 0 2px rgba(255,152,0,0.35); }
+      .detection-box.hover .detection-label { background: #ff9800; }
       .fallback { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 6px; color: var(--secondary-text-color); font-size: 0.85rem; }
       .fallback.show { display: flex; }
       .fallback ha-icon { --mdc-icon-size: 32px; }
@@ -1597,6 +1680,7 @@ class FridgeCard extends HTMLElement {
       .item-simple { align-items: center; gap: 8px; }
       .simple-line { flex: 1; min-width: 0; font-size: 0.85rem; color: var(--primary-text-color); overflow-wrap: anywhere; }
       .simple-line strong { font-weight: 600; }
+      .simple-name-warn { color: var(--error-color, #f44336) !important; }
       .frame-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.8rem; color: var(--secondary-text-color); }
       .frame-actions { display: flex; gap: 4px; flex-shrink: 0; }
       .frame-actions .text-btn { padding: 4px 10px; }
@@ -1612,6 +1696,7 @@ class FridgeCard extends HTMLElement {
       .text-btn.primary { color: var(--primary-color); }
       .text-btn.danger { color: var(--error-color, #f44336); margin-right: auto; }
       .add-row { margin-top: 6px; }
+      .item-search { width: 100%; box-sizing: border-box; font-family: inherit; font-size: 0.85rem; padding: 8px 10px; margin-bottom: 8px; border-radius: 8px; border: 1px solid var(--divider-color, rgba(0,0,0,0.15)); background: var(--card-background-color, #fff); color: var(--primary-text-color); }
       .add-btn { width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 10px; border-radius: 10px; border: 1px dashed var(--divider-color, rgba(0,0,0,0.2)); background: none; color: var(--secondary-text-color); font-family: inherit; font-size: 0.9rem; cursor: pointer; transition: background .15s ease, color .15s ease; }
       .add-btn:hover { background: var(--secondary-background-color, rgba(0,0,0,0.05)); color: var(--primary-text-color); }
       .eaten-section { margin-top: 10px; }
