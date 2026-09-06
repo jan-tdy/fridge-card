@@ -5,6 +5,8 @@ AI-recognized contents.
 
 ![type](https://img.shields.io/badge/type-lovelace--card-blue)
 
+You can take a look at my issue and pr queue if you are wondering why is something stale for days [here](https://github.com/issues/assigned?q=is%3Aissue+or+is%3Apr+state%3Aopen+archived%3Afalse+user%3Ajan-tdy+sort%3Acreated-asc)
+
 - Shows the latest fridge photo, with a fixed rotation set in the card
   config (0/90/180/270°) to correct a crooked camera mount, and a refresh
   button in the header to force-reload it on demand
