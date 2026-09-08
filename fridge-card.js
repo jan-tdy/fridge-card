@@ -49,7 +49,7 @@
  * https://github.com/jan-tdy/fridge-card
  */
 
-const CARD_VERSION = "1.12.0";
+const CARD_VERSION = "1.13.0";
 
 function fireEvent(node, type, detail = {}, options = {}) {
   const event = new Event(type, {
