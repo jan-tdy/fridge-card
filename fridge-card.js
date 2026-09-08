@@ -705,6 +705,10 @@ class FridgeCard extends HTMLElement {
       this._overlayEl.style.width = renderW;
       this._overlayEl.style.height = renderH;
       this._overlayEl.style.transform = transform;
+      // Read by .detection-label's own counter-rotation (see the stylesheet)
+      // so label text stays upright and readable no matter how the photo
+      // itself is rotated.
+      this._overlayEl.style.setProperty("--rot", rot);
     }
   }
 
@@ -873,13 +877,33 @@ class FridgeCard extends HTMLElement {
     };
   }
 
+  // Caps a detection label's width to roughly the box's own on-screen width
+  // plus ~2 characters, so a long item name can't spill far past a small
+  // box - the existing ellipsis/overflow CSS does the actual truncating.
+  // At 90/270 the box's local width/height are swapped on screen (the photo
+  // is rotated a quarter turn), so the on-screen width comes from the box's
+  // height percentage instead.
+  _labelMaxWidthStyle(widthPct, heightPct) {
+    const overlayW = this._overlayEl ? this._overlayEl.offsetWidth : 0;
+    const overlayH = this._overlayEl ? this._overlayEl.offsetHeight : 0;
+    if (!overlayW || !overlayH) return "";
+    const rot = Number(this._config.image_rotation) || 0;
+    const boxWidthPx = (widthPct / 100) * overlayW;
+    const boxHeightPx = (heightPct / 100) * overlayH;
+    const onScreenWidthPx = rot === 90 || rot === 270 ? boxHeightPx : boxWidthPx;
+    const maxWidthPx = Math.max(28, Math.round(onScreenWidthPx + 16));
+    return ` style="max-width:${maxWidthPx}px;"`;
+  }
+
   _boxDivHtml(box, variant, label) {
     const left = Math.min(box.x1, box.x2);
     const top = Math.min(box.y1, box.y2);
     const width = Math.abs(box.x2 - box.x1);
     const height = Math.abs(box.y2 - box.y1);
     const dueSuffix = box.due ? ` · ${formatDMY(new Date(`${box.due}T00:00:00`))}` : "";
-    const labelHtml = label ? `<span class="detection-label">${escapeHtml(label + dueSuffix)}</span>` : "";
+    const labelHtml = label
+      ? `<span class="detection-label"${this._labelMaxWidthStyle(width, height)}>${escapeHtml(label + dueSuffix)}</span>`
+      : "";
     const variantClass = variant ? ` ${variant}` : "";
     return `<div class="detection-box${variantClass}" style="left:${left}%; top:${top}%; width:${width}%; height:${height}%;">${labelHtml}</div>`;
   }
@@ -922,7 +946,11 @@ class FridgeCard extends HTMLElement {
         // Hide the one frame currently being redrawn - only the live drag
         // preview below should stand in for it until the drag finishes.
         if (this._drawingUid === this._editingUid && this._drawingIndex === i) return;
-        parts.push(this._boxDivHtml(box, "pending", editingItem ? editingItem.summary : ""));
+        // With more than one frame, show its number (matching "Frame N" in
+        // the list below) instead of the item name, so it's clear which
+        // frame on the photo corresponds to which one to redraw/remove.
+        const boxLabel = boxes.length > 1 ? String(i + 1) : editingItem ? editingItem.summary : "";
+        parts.push(this._boxDivHtml(box, "pending", boxLabel));
       });
     }
 
@@ -1681,7 +1709,7 @@ class FridgeCard extends HTMLElement {
       .detection-overlay { position: absolute; top: 50%; left: 50%; pointer-events: none; transition: transform .25s ease, width .25s ease, height .25s ease; }
       .detection-box { position: absolute; border: 2px solid #ff3b3b; border-radius: 3px; box-shadow: 0 0 0 1px rgba(0,0,0,0.35); }
       .detection-box.pending { border-color: #2196f3; border-style: dashed; background: rgba(33,150,243,0.1); }
-      .detection-label { position: absolute; top: 0; left: 0; max-width: 130px; background: #ff3b3b; color: #fff; font-size: 11px; font-weight: 600; line-height: 1.5; padding: 1px 6px; border-radius: 0 0 4px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .detection-label { position: absolute; top: 0; left: 0; box-sizing: border-box; max-width: 130px; background: #ff3b3b; color: #fff; font-size: 11px; font-weight: 600; line-height: 1.5; padding: 1px 6px; border-radius: 0 0 4px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transform: rotate(calc(var(--rot, 0) * -1deg)); transform-origin: top left; }
       .detection-box.pending .detection-label { background: #2196f3; }
       .detection-box.hover { border-color: #ff9800; box-shadow: 0 0 0 1px rgba(0,0,0,0.35), 0 0 0 2px rgba(255,152,0,0.35); }
       .detection-box.hover .detection-label { background: #ff9800; }
