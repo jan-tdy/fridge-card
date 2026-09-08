@@ -602,13 +602,20 @@ class FridgeCard extends HTMLElement {
     this._imgEl.addEventListener("load", () => {
       this._fallbackEl.classList.remove("show");
       this._applyImageTransform();
+      // Detection labels cap their own width to the overlay's current pixel
+      // size (see _labelMaxWidthStyle) - that size just changed, so rebuild
+      // them rather than leaving the cap from before the image had loaded.
+      this._renderBoxes();
     });
     this._imgEl.addEventListener("error", () => {
       this._fallbackEl.classList.add("show");
     });
 
     if (!this._resizeObserver && typeof ResizeObserver !== "undefined") {
-      this._resizeObserver = new ResizeObserver(() => this._applyImageTransform());
+      this._resizeObserver = new ResizeObserver(() => {
+        this._applyImageTransform();
+        this._renderBoxes();
+      });
     }
     if (this._resizeObserver) this._resizeObserver.observe(this._imageWrapEl);
 
@@ -939,18 +946,26 @@ class FridgeCard extends HTMLElement {
     }
 
     const editingItem = this._editingUid ? this._items.find((i) => i.uid === this._editingUid) : null;
+    const editingBoxes = this._editingUid
+      ? this._pendingBoxes !== undefined
+        ? this._pendingBoxes
+        : editingItem
+          ? extractBoxes(editingItem.description)
+          : []
+      : [];
+    // With more than one frame, label a box by its number (matching "Frame N"
+    // in the list below) instead of the item name, so it's clear which frame
+    // on the photo corresponds to which one to redraw/remove - shared with
+    // the live redraw preview below so the label doesn't flip to the item
+    // name for the duration of that drag.
+    const frameLabel = (i) => (editingBoxes.length > 1 ? String(i + 1) : editingItem ? editingItem.summary : "");
 
     if (this._editingUid) {
-      const boxes = this._pendingBoxes !== undefined ? this._pendingBoxes : editingItem ? extractBoxes(editingItem.description) : [];
-      boxes.forEach((box, i) => {
+      editingBoxes.forEach((box, i) => {
         // Hide the one frame currently being redrawn - only the live drag
         // preview below should stand in for it until the drag finishes.
         if (this._drawingUid === this._editingUid && this._drawingIndex === i) return;
-        // With more than one frame, show its number (matching "Frame N" in
-        // the list below) instead of the item name, so it's clear which
-        // frame on the photo corresponds to which one to redraw/remove.
-        const boxLabel = boxes.length > 1 ? String(i + 1) : editingItem ? editingItem.summary : "";
-        parts.push(this._boxDivHtml(box, "pending", boxLabel));
+        parts.push(this._boxDivHtml(box, "pending", frameLabel(i)));
       });
     }
 
@@ -973,7 +988,7 @@ class FridgeCard extends HTMLElement {
             y2: Math.max(this._drawStart.y, this._drawCurrent.y),
           },
           "pending",
-          editingItem ? editingItem.summary : ""
+          this._drawingIndex !== null ? frameLabel(this._drawingIndex) : editingItem ? editingItem.summary : ""
         )
       );
     }
