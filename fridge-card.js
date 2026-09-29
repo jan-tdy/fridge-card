@@ -245,7 +245,8 @@ function fieldValue(extractFn, description) {
 }
 
 function fieldMarker(key, value, manual) {
-  return `[[${key}${manual ? "m" : ""}:${value}]]`;
+  // Strip brackets so the value can't break out of the [[key:...]] marker.
+  return `[[${key}${manual ? "m" : ""}:${String(value).replace(/[[\]]/g, "")}]]`;
 }
 
 function stripField(re, description) {
@@ -363,6 +364,9 @@ class FridgeCard extends HTMLElement {
     // re-render that can happen mid-edit (e.g. finishing a hand-drawn box),
     // so in-progress typing isn't lost when the row's HTML is rebuilt.
     this._draft = null;
+    // Message from the last failed save, shown inline in the open edit form
+    // (see _saveItem) - cleared whenever an edit form is (re)opened or closed.
+    this._saveError = null;
   }
 
   setConfig(config) {
@@ -396,6 +400,7 @@ class FridgeCard extends HTMLElement {
     this._drawActive = false;
     this._pendingBoxes = undefined;
     this._draft = null;
+    this._saveError = null;
     this._build();
     if (this._hass) this._refreshAll();
   }
@@ -848,6 +853,7 @@ class FridgeCard extends HTMLElement {
     this._editingUid = best.uid;
     this._pendingBoxes = undefined;
     this._draft = null;
+    this._saveError = null;
     this._drawingUid = null;
     this._drawingIndex = null;
     this._imageWrapEl.classList.remove("drawing");
@@ -1252,12 +1258,25 @@ class FridgeCard extends HTMLElement {
   }
 
   async _restoreEaten(uid) {
-    await this._hass.callService("todo", "update_item", {
-      entity_id: this._config.todo_entity,
-      item: uid,
-      status: "needs_action",
-    });
+    try {
+      await this._hass.callService("todo", "update_item", {
+        entity_id: this._config.todo_entity,
+        item: uid,
+        status: "needs_action",
+      });
+    } catch (err) {
+      this._notifyError("Failed to restore item", err);
+      return;
+    }
     await this._fetchItems();
+  }
+
+  // Surfaces a service-call failure as an HA toast (bubbles up through the
+  // shadow root to the frontend's own notification listener) instead of
+  // leaving nothing but an unhandled rejection in the console.
+  _notifyError(message, err) {
+    console.error(`fridge-card: ${message}`, err);
+    fireEvent(this, "hass-notification", { message: `${message}: ${err && err.message ? err.message : err}` });
   }
 
   // Offers every brand already used on some item as an autocomplete
@@ -1338,6 +1357,11 @@ class FridgeCard extends HTMLElement {
                     })
                     .join("")}
                 </div>`
+              : ""
+          }
+          ${
+            this._saveError
+              ? `<div class="edit-error">Save failed: ${escapeHtml(this._saveError)}</div>`
               : ""
           }
           <div class="edit-actions">
@@ -1443,11 +1467,13 @@ class FridgeCard extends HTMLElement {
       this._editingUid = uid;
       this._pendingBoxes = undefined;
       this._draft = null;
+      this._saveError = null;
       this._renderItems();
     } else if (action === "cancel-edit") {
       this._editingUid = null;
       this._pendingBoxes = undefined;
       this._draft = null;
+      this._saveError = null;
       this._drawingUid = null;
       this._drawingIndex = null;
       this._imageWrapEl.classList.remove("drawing");
@@ -1504,6 +1530,7 @@ class FridgeCard extends HTMLElement {
     this._editingUid = "__new__";
     this._pendingBoxes = undefined;
     this._draft = null;
+    this._saveError = null;
     this._items = [{ uid: "__new__", summary: "", description: "", due: null }, ...this._items];
     this._renderItems();
     requestAnimationFrame(() => {
@@ -1558,6 +1585,7 @@ class FridgeCard extends HTMLElement {
     if (freezer) parts.push("[[freezer:1]]");
     const description = parts.join(" ");
 
+    this._saveError = null;
     try {
       if (uid === "__new__") {
         // Adding a new item under a name that's already sitting in the
@@ -1600,12 +1628,20 @@ class FridgeCard extends HTMLElement {
         else if (due) payload.due_date = due;
         await this._hass.callService("todo", "update_item", payload);
       }
-    } finally {
-      this._editingUid = null;
-      this._pendingBoxes = undefined;
-      this._draft = null;
-      await this._fetchItems();
+    } catch (err) {
+      // Keep the form open with whatever the user typed - clearing
+      // _editingUid/_draft/_pendingBoxes here (as a bare `finally` used to)
+      // would silently throw away the in-progress edit on top of the save
+      // itself having failed.
+      console.error("fridge-card: failed to save item", err);
+      this._saveError = err && err.message ? err.message : String(err);
+      this._renderItems();
+      return;
     }
+    this._editingUid = null;
+    this._pendingBoxes = undefined;
+    this._draft = null;
+    await this._fetchItems();
   }
 
   // Marks an item completed instead of deleting it outright - a quicker,
@@ -1614,11 +1650,16 @@ class FridgeCard extends HTMLElement {
   // being gone for good, and fridge-core reactivates it by name instead of
   // adding a duplicate if it turns out the item is still in the fridge.
   async _markEaten(uid) {
-    await this._hass.callService("todo", "update_item", {
-      entity_id: this._config.todo_entity,
-      item: uid,
-      status: "completed",
-    });
+    try {
+      await this._hass.callService("todo", "update_item", {
+        entity_id: this._config.todo_entity,
+        item: uid,
+        status: "completed",
+      });
+    } catch (err) {
+      this._notifyError("Failed to mark item as eaten", err);
+      return;
+    }
     await this._fetchItems();
   }
 
@@ -1659,11 +1700,16 @@ class FridgeCard extends HTMLElement {
     if (sideDoor) parts.push("[[sidedoor:1]]");
     if (freezer) parts.push("[[freezer:1]]");
 
-    await this._hass.callService("todo", "update_item", {
-      entity_id: this._config.todo_entity,
-      item: uid,
-      description: parts.join(" "),
-    });
+    try {
+      await this._hass.callService("todo", "update_item", {
+        entity_id: this._config.todo_entity,
+        item: uid,
+        description: parts.join(" "),
+      });
+    } catch (err) {
+      this._notifyError("Failed to update quantity", err);
+      return;
+    }
     await this._fetchItems();
   }
 
@@ -1779,6 +1825,7 @@ class FridgeCard extends HTMLElement {
       .box-due { flex: 1; min-width: 0; font-size: 0.78rem !important; padding: 4px 6px !important; }
       .frame-remove { border: none; background: none; color: var(--error-color, #f44336); cursor: pointer; font-size: 0.85rem; padding: 2px 4px; flex-shrink: 0; }
       .frame-remove:hover { background: var(--divider-color, rgba(0,0,0,0.1)); border-radius: 4px; }
+      .edit-error { color: var(--error-color, #f44336); font-size: 0.8rem; }
       .edit-actions { display: flex; justify-content: flex-end; gap: 8px; }
       .text-btn { border: none; background: none; padding: 6px 12px; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer; color: var(--primary-text-color); font-family: inherit; }
       .text-btn:hover { background: var(--divider-color, rgba(0,0,0,0.1)); }
