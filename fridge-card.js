@@ -1714,14 +1714,19 @@ class FridgeCard extends HTMLElement {
   }
 
   async _deleteItem(uid) {
-    this._pendingBoxes = undefined;
-    this._draft = null;
     if (uid === "__new__") {
+      this._pendingBoxes = undefined;
+      this._draft = null;
       this._editingUid = null;
       this._items = this._items.filter((i) => i.uid !== "__new__");
       this._renderItems();
       return;
     }
+    const item = this._items.find((i) => i.uid === uid);
+    const name = item ? item.summary || "this item" : "this item";
+    if (!confirm(`Permanently delete "${name}"? This can't be undone.`)) return;
+    this._pendingBoxes = undefined;
+    this._draft = null;
     await this._hass.callService("todo", "remove_item", { entity_id: this._config.todo_entity, item: uid });
     this._editingUid = null;
     await this._fetchItems();
