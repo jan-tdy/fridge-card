@@ -1133,21 +1133,28 @@ class FridgeCard extends HTMLElement {
     const chips = [];
 
     if (cfg.door_entity && hass.states[cfg.door_entity]) {
-      const open = hass.states[cfg.door_entity].state === "on";
+      const state = hass.states[cfg.door_entity].state;
+      const unavailable = state !== "on" && state !== "off";
+      const open = state === "on";
+      const icon = unavailable ? "mdi:help-rhombus-outline" : open ? "mdi:door-open" : "mdi:door-closed";
+      const label = unavailable ? "Door unavailable" : open ? "Door open" : "Door closed";
       chips.push(`
-        <div class="chip ${open ? "chip-alert" : ""}">
-          <ha-icon icon="${open ? "mdi:door-open" : "mdi:door-closed"}"></ha-icon>
-          <span>${open ? "Door open" : "Door closed"}</span>
+        <div class="chip ${unavailable ? "chip-unavailable" : open ? "chip-alert" : ""}">
+          <ha-icon icon="${icon}"></ha-icon>
+          <span>${label}</span>
         </div>
       `);
     }
 
     if (cfg.light_entity && hass.states[cfg.light_entity]) {
-      const on = hass.states[cfg.light_entity].state === "on";
+      const state = hass.states[cfg.light_entity].state;
+      const unavailable = state !== "on" && state !== "off";
+      const on = state === "on";
+      const label = unavailable ? "Light unavailable" : on ? "Light on" : "Light off";
       chips.push(`
-        <button class="chip chip-btn ${on ? "chip-active" : ""}" data-action="toggle-light">
-          <ha-icon icon="${on ? "mdi:lightbulb" : "mdi:lightbulb-off-outline"}"></ha-icon>
-          <span>${on ? "Light on" : "Light off"}</span>
+        <button class="chip chip-btn ${unavailable ? "chip-unavailable" : on ? "chip-active" : ""}" data-action="toggle-light" ${unavailable ? "disabled" : ""}>
+          <ha-icon icon="${unavailable ? "mdi:help-rhombus-outline" : on ? "mdi:lightbulb" : "mdi:lightbulb-off-outline"}"></ha-icon>
+          <span>${label}</span>
         </button>
       `);
     }
@@ -1786,6 +1793,9 @@ class FridgeCard extends HTMLElement {
       .chip-btn:active { transform: scale(0.96); }
       .chip-alert { background: rgba(var(--rgb-error-color, 244,67,54), 0.14); color: var(--error-color, #f44336); }
       .chip-active { background: rgba(var(--rgb-primary-color, 3,169,244), 0.16); color: var(--primary-color); }
+      .chip-unavailable { opacity: 0.5; }
+      .chip-unavailable.chip-btn { cursor: default; }
+      .chip-unavailable.chip-btn:hover { background: var(--secondary-background-color, rgba(0,0,0,0.06)); }
       .chip-accent { background: var(--primary-color); color: var(--text-primary-color, #fff); }
       .chip-accent:hover { filter: brightness(1.06); }
       .items { display: flex; flex-direction: column; }
