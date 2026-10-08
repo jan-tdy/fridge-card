@@ -1177,8 +1177,11 @@ class FridgeCard extends HTMLElement {
     const st = this._hass.states[this._config.todo_entity];
     const key = st ? `${st.state}|${st.last_changed}` : null;
     if (key === this._itemsStateKey) return;
-    this._itemsStateKey = key;
+    // Don't record the key as seen while editing - leave it mismatched so
+    // the deferred update is still picked up on a later hass tick once
+    // editing ends, instead of being silently consumed and lost for good.
     if (this._editingUid) return;
+    this._itemsStateKey = key;
     this._fetchItems();
   }
 
