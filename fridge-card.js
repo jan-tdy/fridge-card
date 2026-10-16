@@ -1067,6 +1067,8 @@ class FridgeCard extends HTMLElement {
       // the manifest it just appended to.
       await new Promise((resolve) => setTimeout(resolve, 700));
       await this._fetchHistory();
+    } catch (err) {
+      this._notifyError("Failed to save snapshot", err);
     } finally {
       this._saveBtnEl.disabled = false;
     }
@@ -1113,17 +1115,25 @@ class FridgeCard extends HTMLElement {
     this._historyPrevEl.disabled = this._historyIndex >= this._history.length - 1;
   }
 
-  _onStatusClick(e) {
+  async _onStatusClick(e) {
     const btn = e.target.closest("[data-action]");
     if (!btn || btn.disabled) return;
     const action = btn.dataset.action;
     if (action === "toggle-light") {
-      this._hass.callService("light", "toggle", { entity_id: this._config.light_entity });
+      try {
+        await this._hass.callService("light", "toggle", { entity_id: this._config.light_entity });
+      } catch (err) {
+        this._notifyError("Failed to toggle light", err);
+      }
     } else if (action === "stream") {
       fireEvent(this, "hass-more-info", { entityId: this._config.camera_entity });
     } else if (action === "analyze") {
       const { domain, service } = serviceForTrigger(this._config.analyze_entity);
-      this._hass.callService(domain, service, { entity_id: this._config.analyze_entity });
+      try {
+        await this._hass.callService(domain, service, { entity_id: this._config.analyze_entity });
+      } catch (err) {
+        this._notifyError("Failed to start fridge analysis", err);
+      }
     }
   }
 
@@ -1735,9 +1745,14 @@ class FridgeCard extends HTMLElement {
     const item = this._items.find((i) => i.uid === uid);
     const name = item ? item.summary || "this item" : "this item";
     if (!confirm(`Permanently delete "${name}"? This can't be undone.`)) return;
+    try {
+      await this._hass.callService("todo", "remove_item", { entity_id: this._config.todo_entity, item: uid });
+    } catch (err) {
+      this._notifyError("Failed to delete item", err);
+      return;
+    }
     this._pendingBoxes = undefined;
     this._draft = null;
-    await this._hass.callService("todo", "remove_item", { entity_id: this._config.todo_entity, item: uid });
     this._editingUid = null;
     await this._fetchItems();
   }
