@@ -442,6 +442,7 @@ class FridgeCard extends HTMLElement {
 
   connectedCallback() {
     if (this._config && !this.shadowRoot.firstChild) this._build();
+    else this._attachWindowPointerListeners();
   }
 
   set hass(hass) {
@@ -668,20 +669,39 @@ class FridgeCard extends HTMLElement {
     this._imageWrapEl.addEventListener("pointerdown", (e) => this._onDrawStart(e));
     this._imageWrapEl.addEventListener("pointermove", (e) => this._onDrawMove(e));
     this._imageWrapEl.addEventListener("click", (e) => this._onImageClick(e));
-    // _build() can re-run (e.g. every keystroke in the config editor's live
-    // preview); only ever attach one window-level pointerup/pointercancel
-    // listener pair.
-    if (!this._pointerUpBound) {
-      this._pointerUpBound = true;
-      window.addEventListener("pointerup", (e) => this._onDrawEnd(e));
-      // A cancelled pointer sequence (e.g. a touch drag interrupted by a
-      // system gesture) never fires pointerup, so _onDrawEnd would never
-      // run and the card would be stuck in drawing mode - with the frame
-      // being redrawn, if any, hidden - forever.
-      window.addEventListener("pointercancel", () => this._cancelDrawing());
-    }
+    this._attachWindowPointerListeners();
 
     this._applyImageTransform();
+  }
+
+  // The window-level pointerup/pointercancel listeners outlive _build() (it
+  // only ever runs once per element) but not the element itself, so they
+  // must be torn down in disconnectedCallback() - otherwise every card
+  // instance the dashboard ever creates (e.g. re-rendering a view) leaves
+  // its listener on window forever, each one keeping that whole instance
+  // alive.
+  _attachWindowPointerListeners() {
+    if (this._pointerUpBound) return;
+    this._pointerUpBound = true;
+    this._onDrawEndBound = (e) => this._onDrawEnd(e);
+    window.addEventListener("pointerup", this._onDrawEndBound);
+    // A cancelled pointer sequence (e.g. a touch drag interrupted by a
+    // system gesture) never fires pointerup, so _onDrawEnd would never
+    // run and the card would be stuck in drawing mode - with the frame
+    // being redrawn, if any, hidden - forever.
+    this._cancelDrawingBound = () => this._cancelDrawing();
+    window.addEventListener("pointercancel", this._cancelDrawingBound);
+  }
+
+  _detachWindowPointerListeners() {
+    if (!this._pointerUpBound) return;
+    window.removeEventListener("pointerup", this._onDrawEndBound);
+    window.removeEventListener("pointercancel", this._cancelDrawingBound);
+    this._pointerUpBound = false;
+  }
+
+  disconnectedCallback() {
+    this._detachWindowPointerListeners();
   }
 
   // Sizes/positions the <img> to fit image-wrap (preserving aspect ratio,
@@ -1140,6 +1160,15 @@ class FridgeCard extends HTMLElement {
   _updateStatusRow() {
     const cfg = this._config;
     const hass = this._hass;
+    // Chip markup only depends on these two entities' state (camera/analyze
+    // chips are static once configured), so most hass updates - which fire
+    // far more often than the door or light actually change - can skip
+    // rebuilding the row and losing e.g. a chip's :active/:hover state.
+    const key = `${cfg.door_entity ? hass.states[cfg.door_entity]?.state : ""}|${
+      cfg.light_entity ? hass.states[cfg.light_entity]?.state : ""
+    }`;
+    if (key === this._statusRowKey) return;
+    this._statusRowKey = key;
     const chips = [];
 
     if (cfg.door_entity && hass.states[cfg.door_entity]) {
@@ -1204,16 +1233,23 @@ class FridgeCard extends HTMLElement {
 
   async _fetchItems() {
     if (!this._hass || !this._config) return;
+    // Calls can overlap (hass updates fire faster than a callWS round-trip),
+    // so an older call resolving after a newer one must not clobber it with
+    // stale items - only the most recently started call is allowed to apply
+    // its result.
+    const seq = (this._fetchItemsSeq = (this._fetchItemsSeq || 0) + 1);
     try {
       const result = await this._hass.callWS({
         type: "todo/item/list",
         entity_id: this._config.todo_entity,
       });
+      if (seq !== this._fetchItemsSeq) return;
       const items = result.items || [];
       this._items = items.filter((i) => i.status !== "completed");
       this._eatenItems = items.filter((i) => i.status === "completed");
       this._renderItems();
     } catch (err) {
+      if (seq !== this._fetchItemsSeq) return;
       this._itemsEl.innerHTML = `<div class="empty">Unable to load items: ${escapeHtml(err.message || err)}</div>`;
     }
   }
