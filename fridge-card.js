@@ -1007,6 +1007,11 @@ class FridgeCard extends HTMLElement {
     this._overlayEl.innerHTML = parts.join("");
   }
 
+  _cacheBustedImageUrl(path, timestamp) {
+    const separator = path.includes("?") ? "&" : "?";
+    return `${path}${separator}v=${timestamp}`;
+  }
+
   _updateImage() {
     if (this._historyIndex !== -1) return; // browsing a saved snapshot - leave it alone
     const cfg = this._config;
@@ -1023,7 +1028,7 @@ class FridgeCard extends HTMLElement {
       if (ts === null || ts <= this._shownTs) return;
     }
     this._shownTs = ts;
-    const url = ts !== null ? `${cfg.image_path}?v=${ts}` : cfg.image_path;
+    const url = ts !== null ? this._cacheBustedImageUrl(cfg.image_path, ts) : cfg.image_path;
     if (this._imgEl.dataset.src !== url) {
       this._imgEl.dataset.src = url;
       this._imgEl.src = url;
@@ -1043,7 +1048,7 @@ class FridgeCard extends HTMLElement {
       this._updateHistoryControls();
     }
     this._shownTs = Math.floor(Date.now() / 1000);
-    const url = `${this._config.image_path}?v=${this._shownTs}`;
+    const url = this._cacheBustedImageUrl(this._config.image_path, this._shownTs);
     this._imgEl.dataset.src = url;
     this._imgEl.src = url;
   }
@@ -1060,6 +1065,9 @@ class FridgeCard extends HTMLElement {
   // by the shell_command each time Save runs (see fridge-core's README) -
   // as a plain text file the card fetches directly; no listing API needed.
   async _fetchHistory() {
+    const selectedTimestamp = this._historyIndex >= 0
+      ? this._history[this._historyIndex]
+      : null;
     try {
       const res = await fetch(`${this._historyBase()}/manifest.txt`, { cache: "no-store" });
       if (!res.ok) throw new Error(String(res.status));
@@ -1072,8 +1080,13 @@ class FridgeCard extends HTMLElement {
     } catch (e) {
       this._history = [];
     }
-    if (this._historyIndex >= this._history.length) this._historyIndex = -1;
-    this._updateHistoryControls();
+    if (selectedTimestamp !== null) {
+      this._showHistory(this._history.indexOf(selectedTimestamp));
+    } else if (this._historyIndex >= this._history.length) {
+      this._showHistory(-1);
+    } else {
+      this._updateHistoryControls();
+    }
   }
 
   async _saveSnapshot() {
@@ -1082,11 +1095,13 @@ class FridgeCard extends HTMLElement {
     if (!domain || !service) return;
     this._saveBtnEl.disabled = true;
     try {
+      const previousLatest = this._history[0] ?? null;
       await this._hass.callService(domain, service, {});
-      // Give the shell command a moment to finish writing before re-reading
-      // the manifest it just appended to.
-      await new Promise((resolve) => setTimeout(resolve, 700));
-      await this._fetchHistory();
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        await this._fetchHistory();
+        if (this._history[0] !== previousLatest) break;
+      }
     } catch (err) {
       this._notifyError("Failed to save snapshot", err);
     } finally {
